@@ -64,6 +64,7 @@ static const SDL_Color C_AMBER  = { 232, 195, 106, 255 };
 #define TAB_H 24
 #define STATUS_H 18
 #define ROW_H 20
+#define ALPHA_W 18               /* alphabet jump strip width */
 #define MINI_H (HEADER_H + 8 + ART_SZ + 8)
 
 typedef struct {
@@ -75,6 +76,7 @@ typedef struct {
     SDL_Rect b_minimize, b_mini, b_gear, b_close;
     SDL_Rect tabs_lib, tabs_q;
     SDL_Rect breadcrumb;
+    SDL_Rect alpha;
     SDL_Rect list, status;
 } Layout;
 
@@ -96,6 +98,7 @@ typedef struct {
     int art_retry;
     int show_rem;                  /* time display: remaining */
     int vol, drag;
+    int alpha_drag;                /* alphabet strip drag */
     int muted;
     char status[256];
     Uint64 status_at;
@@ -444,9 +447,101 @@ static void layout(void)
         L->breadcrumb.x = PAD; L->breadcrumb.y = ty + TAB_H;
         L->breadcrumb.w = w - 2 * PAD; L->breadcrumb.h = 20;
         L->list.x = 0; L->list.y = ty + TAB_H + (A.tab == 0 ? 20 : 0);
-        L->list.w = w; L->list.h = h - L->list.y - STATUS_H;
+        L->list.w = w - (A.tab == 0 ? ALPHA_W : 0);
+        L->list.h = h - L->list.y - STATUS_H;
+        L->alpha.x = w - ALPHA_W; L->alpha.y = L->list.y;
+        L->alpha.w = A.tab == 0 ? ALPHA_W : 0; L->alpha.h = L->list.h;
         L->status.x = PAD; L->status.y = h - STATUS_H + 2;
         L->status.w = w - 2 * PAD; L->status.h = 16;
+    }
+}
+
+/* ---------------- alphabet jump ---------------- */
+
+/* strip order follows the sorted list order: '#' (digits/symbols) at top,
+ * then A-Z, then あ = the non-ascii (japanese) section at the bottom.
+ * slot: 0 = '#', 1..26 = A-Z, 27 = kana. */
+#define ALPHA_N 28
+static const char ALPHA_CHARS[] = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ\xe3\x81\x82"; /* #A-Zあ */
+
+/* first entry at or after the bucket, case-insensitive; -1 = none */
+static int alpha_target(const LibEntry *e, int n, int slot)
+{
+    int want;   /* -2 = non-alpha bucket, -3 = non-ascii bucket, else 0..25 */
+    if (slot == 0) want = -2;
+    else if (slot <= 26) want = slot - 1;
+    else want = -3;
+    for (int i = 0; i < n; i++) {
+        const char *s;
+        unsigned char c;
+        int b;
+        if (e[i].kind == L_UP) continue;
+        s = e[i].name;
+        while (*s == ' ' || *s == '\t') s++;
+        if (!*s) continue;
+        c = (unsigned char)*s;
+        b = (c >= 'a' && c <= 'z') ? c - 'a' : (c >= 'A' && c <= 'Z') ? c - 'A' : -1;
+        if (want == -2) { if (b < 0) return i; }
+        else if (want == -3) { if (c >= 0x80) return i; }
+        else if (b >= want) return i;
+    }
+    return -1;
+}
+
+static void alpha_jump(int slot)
+{
+    int t = alpha_target(A.entries, A.n_entries, slot);
+    int vis;
+    if (t < 0) return;
+    vis = A.L.list.h / ROW_H;
+    A.sel = t;
+    A.scroll = t;
+    if (vis > 0 && A.scroll > A.n_entries - vis) A.scroll = A.n_entries - vis;
+    if (A.scroll < 0) A.scroll = 0;
+}
+
+static void alpha_pick(int y)
+{
+    int nslot, slot;
+    if (A.tab != 0 || A.mini || A.L.alpha.w <= 0) return;
+    if (y < A.L.alpha.y || y >= A.L.alpha.y + A.L.alpha.h) return;
+    nslot = A.L.alpha.h / ALPHA_N;
+    if (nslot <= 0) nslot = 1;
+    slot = (y - A.L.alpha.y) / nslot;
+    if (slot < 0) slot = 0;
+    if (slot > ALPHA_N - 1) slot = ALPHA_N - 1;
+    alpha_jump(slot);
+}
+
+static void draw_alpha(void)
+{
+    int mx, my, hover_i = -1;
+    int nslot;
+    if (A.tab != 0 || A.mini || A.L.alpha.w <= 0) return;
+    SDL_GetMouseState(&mx, &my);
+    /* divider between rows and the strip */
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawLine(A.ren, A.L.alpha.x, A.L.alpha.y,
+                       A.L.alpha.x, A.L.alpha.y + A.L.alpha.h - 1);
+    nslot = A.L.alpha.h / ALPHA_N;
+    if (nslot <= 0) return;
+    if (inr(A.L.alpha, mx, my)) {
+        hover_i = (my - A.L.alpha.y) / nslot;
+        if (hover_i > ALPHA_N - 1) hover_i = ALPHA_N - 1;
+    }
+    for (int i = 0; i < ALPHA_N; i++) {
+        int y = A.L.alpha.y + i * nslot;
+        if (i == hover_i) {
+            SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
+            SDL_Rect hl = { A.L.alpha.x + 1, y, A.L.alpha.w - 2, nslot };
+            SDL_RenderFillRect(A.ren, &hl);
+        }
+        char c[4];
+        if (i == ALPHA_N - 1)
+            snprintf(c, sizeof c, "\xe3\x81\x82");   /* あ */
+        else
+            snprintf(c, sizeof c, "%c", ALPHA_CHARS[i]);
+        draw_text(A.L.alpha.x + 1, y, c, i == hover_i ? C_TXT : C_DIM, 1);
     }
 }
 
@@ -891,6 +986,7 @@ static void render(void)
         draw_tabs();
         if (A.tab == 0) draw_breadcrumb();
         draw_list_rows(A.tab);
+        draw_alpha();
         draw_status();
     }
     if (A.modal) draw_modal();
@@ -1636,6 +1732,12 @@ static void handle_mouse(SDL_Event *ev)
                     layout();
                     return;
                 }
+                /* alphabet jump strip */
+                if (A.tab == 0 && ev->button.button == SDL_BUTTON_LEFT && inr(A.L.alpha, x, y)) {
+                    A.alpha_drag = 1;
+                    alpha_pick(y);
+                    return;
+                }
                 /* list rows */
                 if (inr(A.L.list, x, y)) {
                     int row = (y - A.L.list.y) / ROW_H;
@@ -1657,8 +1759,11 @@ static void handle_mouse(SDL_Event *ev)
         }
     } else if (ev->type == SDL_MOUSEBUTTONUP) {
         A.drag = 0;
+        A.alpha_drag = 0;
     } else if (ev->type == SDL_MOUSEMOTION) {
-        if (A.drag == 1) {
+        if (A.alpha_drag) {
+            alpha_pick(ev->motion.y);
+        } else if (A.drag == 1) {
             double len = player_length(A.pl);
             if (len > 0) {
                 double v = (double)(ev->motion.x - A.L.seek.x) / A.L.seek.w;
@@ -1920,6 +2025,26 @@ static int selftest(const char *cfgfile_global)
         printf("queue: %s\n", fails ? "FAIL" : "ok");
     }
 
+    /* alphabet jump target */
+    {
+        static LibEntry te[7];
+        memset(te, 0, sizeof te);
+        te[0].kind = L_UP;   snprintf(te[0].name, sizeof te[0].name, "..");
+        te[1].kind = L_FILE; snprintf(te[1].name, sizeof te[1].name, "1two");
+        te[2].kind = L_DIR;  snprintf(te[2].name, sizeof te[2].name, "あいう");
+        te[3].kind = L_DIR;  snprintf(te[3].name, sizeof te[3].name, "apple");
+        te[4].kind = L_DIR;  snprintf(te[4].name, sizeof te[4].name, "Banana");
+        te[5].kind = L_FILE; snprintf(te[5].name, sizeof te[5].name, "cherry");
+        te[6].kind = L_FILE; snprintf(te[6].name, sizeof te[6].name, "中");
+        if (alpha_target(te, 7, 0) != 1) { printf("FAIL: alpha #\n"); fails++; }
+        if (alpha_target(te, 7, 1) != 3) { printf("FAIL: alpha A\n"); fails++; }
+        if (alpha_target(te, 7, 2) != 4) { printf("FAIL: alpha B\n"); fails++; }
+        if (alpha_target(te, 7, 3) != 5) { printf("FAIL: alpha C\n"); fails++; }
+        if (alpha_target(te, 7, 26) != -1) { printf("FAIL: alpha Z\n"); fails++; }
+        if (alpha_target(te, 7, 27) != 2) { printf("FAIL: alpha kana\n"); fails++; }
+        printf("alpha: %s\n", fails ? "FAIL" : "ok");
+    }
+
     /* library scan */
     {
         LibEntry *e = NULL;
@@ -1933,6 +2058,15 @@ static int selftest(const char *cfgfile_global)
             }
             printf("scan: %s → %d dirs, %d files, %d entries\n", cfg.music_dir, dirs, files, n);
             if (n > 1 && strcmp(e[0].name, "..")) { printf("FAIL: '..' not first\n"); fails++; }
+            /* real-library jump targets: every slot should resolve */
+            {
+                printf("alpha targets:");
+                for (int s = 0; s < ALPHA_N; s++) {
+                    int t = alpha_target(e, n, s);
+                    printf(" %s%s", s ? "|" : "", t >= 0 ? e[t].name : "-");
+                }
+                printf("\n");
+            }
             lib_free_entries(e);
         }
     }
