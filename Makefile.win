@@ -20,6 +20,7 @@ dist: build-win/mikaplay.exe
 	@mkdir -p build-win/dist/assets
 	cp build-win/mikaplay.exe build-win/dist/
 	cp vendor/mpv-win/libmpv-2.dll build-win/dist/
+	cp /usr/x86_64-w64-mingw32/sys-root/mingw/bin/*.dll build-win/dist/
 	cp assets/mikaplay.png assets/unifont_all.hex build-win/dist/assets/
 	cd build-win/dist && zip -qr ../mikaplay-windows.zip .
 	@echo "== build-win/mikaplay-windows.zip =="

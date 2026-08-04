@@ -40,6 +40,21 @@ sudo apk add build-base pkgconf sdl2-dev sdl2_image-dev mpv-dev curl-dev glib-de
 make
 ```
 
+### windows (cross-compile from linux)
+
+```
+# fedora: mingw toolchain
+sudo dnf install mingw64-gcc mingw64-SDL2_image mingw64-sdl2-compat mingw64-curl
+
+make -f Makefile.win dist    # -> build-win/mikaplay-windows.zip
+```
+
+the zip bundles the exe, the runtime dlls, and the assets — extract and run
+`mikaplay.exe`. mpv's windows dev files (headers + import lib) are vendored
+in `vendor/mpv-win/`; the 117MB `libmpv-2.dll` ships only in the dist zip.
+tested under wine (set `SDL_RENDER_DRIVER=software` there; real windows uses
+the fast D3D path).
+
 (the glib2 dependency is what powers MPRIS media-key integration — every desktop distro carries it.)
 
 the binary needs `unifont_all.hex` — it looks in `assets/`, next to the binary, or in `~/.local/share/mikaplay/`. grab it from the [GNU unifont releases](https://ftp.gnu.org/gnu/unifont/) (any recent `unifont_all-*.hex`).
