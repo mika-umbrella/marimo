@@ -22,11 +22,25 @@ built with C, SDL2, libmpv and a lot of stubbornness. no GTK, no webview, no fee
 ## building
 
 ```
-# fedora / rpm-based
+# fedora / rhel
 sudo dnf install gcc make pkg-config SDL2-devel SDL2_image-devel mpv-devel libcurl-devel glib2-devel
+
+# debian / ubuntu
+sudo apt install build-essential pkg-config libsdl2-dev libsdl2-image-dev libmpv-dev libcurl4-openssl-dev libglib2.0-dev
+
+# arch / manjaro
+sudo pacman -S gcc make pkg-config sdl2 sdl2_image mpv curl glib2
+
+# opensuse
+sudo zypper install gcc make pkg-config SDL2-devel SDL2_image-devel mpv-devel libcurl-devel glib2-devel
+
+# alpine
+sudo apk add build-base pkgconf sdl2-dev sdl2_image-dev mpv-dev curl-dev glib-dev
 
 make
 ```
+
+(the glib2 dependency is what powers MPRIS media-key integration — every desktop distro carries it.)
 
 the binary needs `unifont_all.hex` — it looks in `assets/`, next to the binary, or in `~/.local/share/mikaplay/`. grab it from the [GNU unifont releases](https://ftp.gnu.org/gnu/unifont/) (any recent `unifont_all-*.hex`).
 
