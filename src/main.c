@@ -2142,28 +2142,20 @@ static int smoke(void)
 
 static int makeicon(const char *out)
 {
-    /* a marimo in the dark: round moss ball with a top-light gradient,
-     * mottled texture patches, headphones, dot eyes and a tiny smile.
-     * pixel-buffered so the shading is exact. */
+    /* a marimo in the open: transparent background so it sits on any
+     * desktop theme — just the moss ball, headphones, face and one ♪.
+     * exact RGBA via a direct pixel buffer; no renderer or font needed. */
     const int S = 128;
-    SDL_Window *win = SDL_CreateWindow("icon", 0, 0, S, S, 0);
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, 0);
-    Font f;
-    const char *fp;
     SDL_Surface *surf;
-    int rc = 0;
-    int x, y;
-    if (!ren) return 1;
+    Uint32 *px;
+    int x, y, rc;
 
-    /* soft dark green-black backdrop (vertical gradient) */
-    for (y = 0; y < S; y++) {
-        double t = y / (double)(S - 1);
-        int r = (int)(18 + (9 - 18) * t);
-        int g = (int)(23 + (11 - 23) * t);
-        int b = (int)(17 + (8 - 17) * t);
-        SDL_SetRenderDrawColor(ren, r, g, b, 255);
-        SDL_RenderDrawLine(ren, 0, y, S, y);
-    }
+    surf = SDL_CreateRGBSurfaceWithFormat(0, S, S, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!surf) return 1;
+    px = (Uint32 *)surf->pixels;
+    for (y = 0; y < S; y++)
+        for (x = 0; x < S; x++)
+            px[y * S + x] = 0;          /* fully transparent */
 
     /* the ball */
     {
@@ -2198,8 +2190,7 @@ static int makeicon(const char *out)
                         r += (int)((255 - r) * 0.45); g += (int)((255 - g) * 0.45); b += (int)((255 - b) * 0.45);
                     }
                 }
-                SDL_SetRenderDrawColor(ren, r, g, b, 255);
-                SDL_RenderDrawPoint(ren, x, y);
+                px[y * S + x] = 0xFF000000 | ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
             }
         }
         /* headphone band: ring arcing over the top */
@@ -2212,8 +2203,7 @@ static int makeicon(const char *out)
                     double d = sqrt(dx * dx + dy * dy);
                     if (y > bcy) continue;                 /* arc only */
                     if (d > BR - 2.5 && d < BR + 2.5) {
-                        SDL_SetRenderDrawColor(ren, br, bg, bb, 255);
-                        SDL_RenderDrawPoint(ren, x, y);
+                        px[y * S + x] = 0xFF000000 | ((Uint32)br << 16) | ((Uint32)bg << 8) | (Uint32)bb;
                     }
                 }
             }
@@ -2224,8 +2214,7 @@ static int makeicon(const char *out)
                     for (x = ecx - ER; x <= ecx + ER; x++) {
                         double dx = x - ecx, dy = y - ecy;
                         if (dx * dx + dy * dy <= ER * ER) {
-                            SDL_SetRenderDrawColor(ren, br, bg, bb, 255);
-                            SDL_RenderDrawPoint(ren, x, y);
+                            px[y * S + x] = 0xFF000000 | ((Uint32)br << 16) | ((Uint32)bg << 8) | (Uint32)bb;
                         }
                     }
                 }
@@ -2237,8 +2226,7 @@ static int makeicon(const char *out)
             for (y = ecy - 2; y <= ecy + 2; y++)
                 for (x = ecx - 2; x <= ecx + 2; x++)
                     if ((x - ecx) * (x - ecx) + (y - ecy) * (y - ecy) <= 4) {
-                        SDL_SetRenderDrawColor(ren, 8, 11, 8, 255);
-                        SDL_RenderDrawPoint(ren, x, y);
+                        px[y * S + x] = 0xFF000000 | (8u << 16) | (11u << 8) | 8u;
                     }
         }
         /* blush */
@@ -2248,8 +2236,7 @@ static int makeicon(const char *out)
                 for (x = ecx - ER; x <= ecx + ER; x++) {
                     double dx = x - ecx, dy = y - ecy;
                     if (dx * dx + dy * dy <= ER * ER) {
-                        SDL_SetRenderDrawColor(ren, 224, 142, 141, 255);
-                        SDL_RenderDrawPoint(ren, x, y);
+                        px[y * S + x] = 0xFF000000 | (224u << 16) | (142u << 8) | 141u;
                     }
                 }
         }
@@ -2257,26 +2244,43 @@ static int makeicon(const char *out)
         for (double th = 0.15 * 3.14159; th <= 0.85 * 3.14159; th += 0.08) {
             int sx = (int)(64 + 8.5 * cos(th));
             int sy = (int)(66 + 8.5 * sin(th));
-            SDL_SetRenderDrawColor(ren, 8, 11, 8, 255);
-            SDL_RenderDrawPoint(ren, sx, sy);
+            px[sy * S + sx] = 0xFF000000 | (8u << 16) | (11u << 8) | 8u;
         }
     }
 
-    /* tiny ♪ up top-right (unifont, keeps the font DNA) */
-    fp = find_font();
-    if (fp && font_load(&f, ren, fp) >= 1000) {
-        font_draw(&f, 100, 10, "\xe2\x99\xaa", 1, 232, 221, 208);
-        font_free(&f);
+    /* tiny ♪ floating top-right — hand-drawn pixel note (12x17) */
+    {
+        static const char *const note[] = {
+            "....#........",
+            "....#.#......",
+            "....#..#.....",
+            "....#...#....",
+            "....#....#...",
+            "....#........",
+            "....#........",
+            "....#........",
+            "....#........",
+            "....#........",
+            "....#........",
+            "....#........",
+            "....##.......",
+            "...####......",
+            "..######.....",
+            "...####......",
+            "....##.......",
+        };
+        const int ox = 99, oy = 6;
+        for (y = 0; y < 17; y++)
+            for (x = 0; x < 12; x++)
+                if (note[y][x] == '#')
+                    px[(oy + y) * S + (ox + x)] = 0xFF000000 | (140u << 16) | (200u << 8) | 120u;
     }
 
-    surf = SDL_CreateRGBSurfaceWithFormat(0, S, S, 32, SDL_PIXELFORMAT_ARGB8888);
-    SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
     rc = IMG_SavePNG(surf, out);
     SDL_FreeSurface(surf);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
     return rc == 0 ? 0 : 1;
 }
+
 
 static int screenshot(const char *out)
 {
