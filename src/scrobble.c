@@ -12,6 +12,12 @@
 #include <time.h>
 #include <ctype.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#ifndef sleep
+#define sleep(s) Sleep((s) * 1000)
+#endif
+#endif
 
 #define LF_ENDPOINT "https://ws.audioscrobbler.com/2.0/"
 #define LB_ENDPOINT "https://api.listenbrainz.org/1/submit-listens"
@@ -294,7 +300,11 @@ static void *auth_thread(void *x)
 
     {
         char cmd[600];
+#ifdef _WIN32
+        snprintf(cmd, sizeof cmd, "start \"\" \"%s\"", url);
+#else
         snprintf(cmd, sizeof cmd, "xdg-open '%s' >/dev/null 2>&1 &", url);
+#endif
         if (system(cmd) != 0)
             fprintf(stderr, "mikaplay: could not open browser for last.fm auth\n");
     }

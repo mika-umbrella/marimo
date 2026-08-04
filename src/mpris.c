@@ -6,6 +6,13 @@
  *                                     Seek/SetPosition + properties)
  * g_bus_own_name runs its own thread; that thread never touches mpv. */
 #include "mpris.h"
+#ifdef _WIN32
+/* windows: no session dbus, no MPRIS — stubs (SMTC could replace it later) */
+void mpris_init(void) {}
+void mpris_shutdown(void) {}
+void mpris_publish(const MprisState *s) { (void)s; }
+MprisCmd mpris_take_command(void) { MprisCmd c = { 0, 0 }; return c; }
+#else
 #include <gio/gio.h>
 #include <string.h>
 #include <stdio.h>
@@ -377,3 +384,4 @@ void mpris_shutdown(void)
     pthread_join(thr, NULL);
     loop = NULL;
 }
+#endif

@@ -12,6 +12,9 @@
  * modes: --selftest  (headless self checks)   --headless=DIR (play pipeline test)
  *        --smoke     (render N frames, exit)  --music DIR   --aout NAME
  */
+#ifdef _WIN32
+#define SDL_MAIN_HANDLED
+#endif
 #include <SDL.h>
 #include <SDL_image.h>
 #include <pthread.h>
@@ -2218,6 +2221,9 @@ static int screenshot(const char *out)
 
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    SDL_SetMainReady();
+#endif
     const char *music = NULL;
     const char *aout = getenv("MIKAPLAY_AOUT");
     const char *shot_path = NULL;
@@ -2225,7 +2231,9 @@ int main(int argc, char **argv)
     const char *headless_dir = NULL;
     const char *fontpath;
     char cfgfile[1024];
-    const char *home = getenv("HOME") ? getenv("HOME") : "/tmp";
+    const char *home = getenv("HOME") ? getenv("HOME")
+                       : getenv("USERPROFILE") ? getenv("USERPROFILE")
+                       : "/tmp";
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--selftest")) do_selftest = 1;
@@ -2251,7 +2259,11 @@ int main(int argc, char **argv)
     {
         char d[1024];
         snprintf(d, sizeof d, "%s/.config/mikaplay", home);
+#ifdef _WIN32
+        mkdir(d);
+#else
         mkdir(d, 0755);
+#endif
     }
     config_load(cfgfile);
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);

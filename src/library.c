@@ -1,13 +1,49 @@
 /* library.c — dirent-based browsing. Names are passed through as raw UTF-8
  * bytes; we never touch their contents, so weird characters just work. */
 #include "library.h"
-#include <dirent.h>
 #include <sys/stat.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#ifdef _WIN32
+/* minimal dirent shim over FindFirstFile (folder browser only) */
+#include <windows.h>
+typedef struct DIR DIR;
+struct dirent { char d_name[512]; };
+struct DIR {
+    HANDLE h;
+    WIN32_FIND_DATAA fd;
+    struct dirent ent;
+    int first;
+};
+static DIR *opendir(const char *path)
+{
+    char pat[L_PATH_MAX + 4];
+    DIR *d = (DIR *)calloc(1, sizeof(DIR));
+    if (!d) return NULL;
+    snprintf(pat, sizeof pat, "%s\\*", path);
+    d->h = FindFirstFileA(pat, &d->fd);
+    if (d->h == INVALID_HANDLE_VALUE) { free(d); return NULL; }
+    d->first = 1;
+    return d;
+}
+static struct dirent *readdir(DIR *d)
+{
+    if (!d->first && !FindNextFileA(d->h, &d->fd)) return NULL;
+    d->first = 0;
+    snprintf(d->ent.d_name, sizeof d->ent.d_name, "%s", d->fd.cFileName);
+    return &d->ent;
+}
+static int closedir(DIR *d)
+{
+    if (d) { FindClose(d->h); free(d); }
+    return 0;
+}
+#else
+#include <dirent.h>
+#endif
 
 static const char *audio_exts[] = {
     ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav",

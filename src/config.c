@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 
 Config cfg;
 static char cfg_path[CFG_PATH_MAX + 64];
@@ -12,9 +14,14 @@ static char cfg_path[CFG_PATH_MAX + 64];
 void config_defaults(void)
 {
     const char *home = getenv("HOME");
+    if (!home) home = getenv("USERPROFILE");
     if (!home) {
+#ifndef _WIN32
         struct passwd *pw = getpwuid(getuid());
         home = pw ? pw->pw_dir : "/";
+#else
+        home = "C:\\";
+#endif
     }
     snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s/Music", home);
     snprintf(cfg.last_dir, sizeof cfg.last_dir, "%s", cfg.music_dir);

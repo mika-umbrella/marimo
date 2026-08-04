@@ -1,2 +1,5 @@
 build/
 *.o
+vendor/mpv-win/*.dll
+vendor/mpv-win/*.7z
+build-win/
