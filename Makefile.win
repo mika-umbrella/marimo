@@ -10,7 +10,7 @@ CFLAGS  += -I src -I vendor/mpv-win/include -I/usr/x86_64-w64-mingw32/sys-root/m
 LIBS    := vendor/mpv-win/libmpv.dll.a -lmingw32 -lSDL2 -lSDL2_image -lcurl \
            -lpthread -lws2_32 -lwinmm -limm32 -lversion -lole32 -ljpeg -lpng -lz -lm -mwindows
 SRC     := src/main.c src/player.c src/font.c src/icons.c src/library.c src/queue.c \
-           src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c
+           src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c src/fs.c
 
 build-win/mikaplay.exe: $(SRC) $(wildcard src/*.h)
 	@mkdir -p build-win

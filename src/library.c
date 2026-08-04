@@ -1,39 +1,59 @@
 /* library.c — dirent-based browsing. Names are passed through as raw UTF-8
  * bytes; we never touch their contents, so weird characters just work. */
 #include "library.h"
+#include "fs.h"
 #include <sys/stat.h>
 #include <strings.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <wchar.h>
 #include <unistd.h>
 #ifdef _WIN32
-/* minimal dirent shim over FindFirstFile (folder browser only) */
+/* minimal dirent shim over FindFirstFileW (folder browser only).
+ * The ANSI (A) APIs use the system codepage and mangle non-ascii names;
+ * the W APIs give UTF-16, which we convert to UTF-8 for the app. */
 #include <windows.h>
+#include "fs.h"
 typedef struct DIR DIR;
 struct dirent { char d_name[512]; };
 struct DIR {
     HANDLE h;
-    WIN32_FIND_DATAA fd;
+    WIN32_FIND_DATAW fd;
     struct dirent ent;
     int first;
 };
 static DIR *opendir(const char *path)
 {
-    char pat[L_PATH_MAX + 4];
+    wchar_t *wpat, *wp;
     DIR *d = (DIR *)calloc(1, sizeof(DIR));
+    size_t plen;
     if (!d) return NULL;
-    snprintf(pat, sizeof pat, "%s\\*", path);
-    d->h = FindFirstFileA(pat, &d->fd);
+    plen = strlen(path);
+    if (plen > L_PATH_MAX - 2) { free(d); return NULL; }
+    wp = fs_utf8_to_wide(path);
+    if (!wp) { free(d); return NULL; }
+    wpat = (wchar_t *)malloc((plen + 3) * sizeof(wchar_t));
+    if (!wpat) { free(wp); free(d); return NULL; }
+    wcscpy(wpat, wp);
+    wcscat(wpat, L"\\*");
+    free(wp);
+    d->h = FindFirstFileW(wpat, &d->fd);
+    free(wpat);
     if (d->h == INVALID_HANDLE_VALUE) { free(d); return NULL; }
     d->first = 1;
     return d;
 }
 static struct dirent *readdir(DIR *d)
 {
-    if (!d->first && !FindNextFileA(d->h, &d->fd)) return NULL;
+    if (!d->first && !FindNextFileW(d->h, &d->fd)) return NULL;
     d->first = 0;
-    snprintf(d->ent.d_name, sizeof d->ent.d_name, "%s", d->fd.cFileName);
+    {
+        char *u = fs_wide_to_utf8(d->fd.cFileName);
+        if (!u) return NULL;
+        snprintf(d->ent.d_name, sizeof d->ent.d_name, "%s", u);
+        free(u);
+    }
     return &d->ent;
 }
 static int closedir(DIR *d)
@@ -113,7 +133,7 @@ int lib_scan(const char *dir, LibEntry **out)
         struct stat st;
         if (de->d_name[0] == '.') continue;
         snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
-        if (stat(path, &st)) continue;
+        if (fs_stat(path, &st)) continue;
         if (S_ISDIR(st.st_mode))
             add_entry(&ents, &n, &cap, L_DIR, de->d_name, path, 0);
         else if (S_ISREG(st.st_mode) && lib_is_audio(de->d_name))

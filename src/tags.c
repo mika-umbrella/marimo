@@ -3,6 +3,7 @@
  * album/tracknumber/discnumber). MP3: ID3v2.2/2.3/2.4 frames.
  * Everything else returns -1 and callers fall back to mpv or filename order. */
 #include "tags.h"
+#include "fs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -236,7 +237,7 @@ int tag_read_meta(const char *path, Meta *meta)
     int track = -1, disc = -1;
     int rc = -1;
     memset(meta, 0, sizeof(*meta));
-    f = fopen(path, "rb");
+    f = fs_fopen(path, "rb");
     if (!f) return -1;
     if (fread(magic, 1, 4, f) != 4) { fclose(f); return -1; }
     rewind(f);
@@ -260,7 +261,7 @@ int tag_trackinfo(const char *path, int *track, int *disc)
     int rc = -1;
     *track = -1;
     *disc = -1;
-    f = fopen(path, "rb");
+    f = fs_fopen(path, "rb");
     if (!f) return -1;
     if (fread(magic, 1, 4, f) != 4) { fclose(f); return -1; }
     rewind(f);

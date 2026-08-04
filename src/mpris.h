@@ -29,6 +29,8 @@ typedef struct { int cmd; int64_t arg; } MprisCmd;
 #define MPRIS_SEEK 7       /* arg = offset in microseconds */
 #define MPRIS_SETPOS 8     /* arg = position in microseconds */
 #define MPRIS_VOLUME 9     /* arg = volume * 100 */
+#define MPRIS_VOLUMEDELTA 10 /* arg = delta * 100 (windows hotkeys) */
+#define MPRIS_MUTE 11        /* toggle mute (windows hotkeys) */
 
 void mpris_init(void);
 void mpris_shutdown(void);

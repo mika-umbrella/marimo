@@ -6,28 +6,156 @@
  *                                     Seek/SetPosition + properties)
  * g_bus_own_name runs its own thread; that thread never touches mpv. */
 #include "mpris.h"
-#ifdef _WIN32
-/* windows: no session dbus, no MPRIS — stubs (SMTC could replace it later) */
-void mpris_init(void) {}
-void mpris_shutdown(void) {}
-void mpris_publish(const MprisState *s) { (void)s; }
-MprisCmd mpris_take_command(void) { MprisCmd c = { 0, 0 }; return c; }
-#else
-#include <gio/gio.h>
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
 
-#define BUS_NAME "org.mpris.MediaPlayer2.mikaplay"
-#define OBJ_PATH "/org/mpris/MediaPlayer2"
-
+/* Shared command queue: fed by the dbus thread (unix) or the global
+ * hotkey thread (windows), drained by the main loop every frame. */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static MprisState st;
-static guint owner_id = 0;
-
 typedef struct { int cmd; int64_t arg; } Cmd;
 static Cmd cmds[16];
 static int n_cmds;
+
+static void enqueue(int cmd, int64_t arg)
+{
+    pthread_mutex_lock(&lock);
+    if (n_cmds < 16) {
+        cmds[n_cmds].cmd = cmd;
+        cmds[n_cmds].arg = arg;
+        n_cmds++;
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+MprisCmd mpris_take_command(void)
+{
+    pthread_mutex_lock(&lock);
+    MprisCmd c = { 0, 0 };
+    if (n_cmds > 0) {
+        c.cmd = cmds[0].cmd;
+        c.arg = cmds[0].arg;
+        memmove(cmds, cmds + 1, (n_cmds - 1) * sizeof(Cmd));
+        n_cmds--;
+    }
+    pthread_mutex_unlock(&lock);
+    return c;
+}
+
+#ifdef _WIN32
+/* windows: no session dbus, no MPRIS. instead, global media hotkeys
+ * (RegisterHotKey on a hidden message-only window) feed the same queue. */
+#include <windows.h>
+
+#ifndef MOD_NOREPEAT
+#define MOD_NOREPEAT 0x4000
+#endif
+#ifndef VK_MEDIA_PLAY_PAUSE
+#define VK_MEDIA_PLAY_PAUSE 0xB3
+#define VK_MEDIA_PAUSE 0xB4
+#define VK_MEDIA_STOP 0xB2
+#define VK_MEDIA_NEXT_TRACK 0xB0
+#define VK_MEDIA_PREV_TRACK 0xB1
+#define VK_VOLUME_MUTE 0xAD
+#define VK_VOLUME_DOWN 0xAE
+#define VK_VOLUME_UP 0xAF
+#endif
+
+#define HK_PLAYPAUSE 1
+#define HK_NEXT      2
+#define HK_PREV      3
+#define HK_STOP      4
+#define HK_VOLUP     5
+#define HK_VOLDOWN   6
+#define HK_MUTE      7
+
+static const struct { int id; UINT vk; int cmd; int arg; } hotkeys[] = {
+    { HK_PLAYPAUSE, VK_MEDIA_PLAY_PAUSE, MPRIS_PLAYPAUSE, 0 },
+    { HK_NEXT,      VK_MEDIA_NEXT_TRACK, MPRIS_NEXT,      0 },
+    { HK_PREV,      VK_MEDIA_PREV_TRACK, MPRIS_PREV,      0 },
+    { HK_STOP,      VK_MEDIA_STOP,       MPRIS_STOP,      0 },
+    { HK_VOLUP,     VK_VOLUME_UP,        MPRIS_VOLUMEDELTA, +200 },
+    { HK_VOLDOWN,   VK_VOLUME_DOWN,      MPRIS_VOLUMEDELTA, -200 },
+    { HK_MUTE,      VK_VOLUME_MUTE,      MPRIS_MUTE,       0 },
+};
+#define N_HOTKEYS (int)(sizeof hotkeys / sizeof hotkeys[0])
+
+static const wchar_t HK_CLASS[] = L"mikaplay_hotkeys";
+static volatile LONG hk_running;
+static DWORD hk_tid;
+
+static LRESULT CALLBACK hk_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_HOTKEY) {
+        int id = (int)wp;
+        for (int i = 0; i < N_HOTKEYS; i++) {
+            if (hotkeys[i].id == id) {
+                enqueue(hotkeys[i].cmd, hotkeys[i].arg);
+                break;
+            }
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static DWORD WINAPI hk_thread(LPVOID ud)
+{
+    WNDCLASSW wc;
+    HWND wnd;
+    MSG msg;
+    (void)ud;
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = hk_wndproc;
+    wc.lpszClassName = HK_CLASS;
+    wc.hInstance = GetModuleHandleW(NULL);
+    if (!RegisterClassW(&wc)) { InterlockedExchange(&hk_running, 0); return 1; }
+    wnd = CreateWindowExW(0, HK_CLASS, L"mikaplay_hotkeys", 0,
+                          0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
+    if (!wnd) { InterlockedExchange(&hk_running, 0); return 1; }
+    /* registration failures (key taken by another app) are skipped: the
+     * remaining hotkeys still work */
+    for (int i = 0; i < N_HOTKEYS; i++)
+        RegisterHotKey(wnd, hotkeys[i].id, MOD_NOREPEAT, hotkeys[i].vk);
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    for (int i = 0; i < N_HOTKEYS; i++)
+        UnregisterHotKey(wnd, hotkeys[i].id);
+    DestroyWindow(wnd);
+    UnregisterClassW(HK_CLASS, wc.hInstance);
+    InterlockedExchange(&hk_running, 0);
+    return 0;
+}
+
+static void hk_start(void)
+{
+    HANDLE h;
+    if (InterlockedCompareExchange(&hk_running, 1, 0) != 0) return;
+    h = CreateThread(NULL, 0, hk_thread, NULL, 0, &hk_tid);
+    if (!h) InterlockedExchange(&hk_running, 0);
+    else CloseHandle(h);
+}
+
+static void hk_stop(void)
+{
+    if (!hk_running) return;
+    PostThreadMessageW(hk_tid, WM_QUIT, 0, 0);
+    for (int i = 0; i < 200 && hk_running; i++) Sleep(10);
+}
+
+void mpris_init(void)     { hk_start(); }
+void mpris_shutdown(void) { hk_stop(); }
+void mpris_publish(const MprisState *s) { (void)s; }
+#else
+#include <gio/gio.h>
+
+#define BUS_NAME "org.mpris.MediaPlayer2.mikaplay"
+#define OBJ_PATH "/org/mpris/MediaPlayer2"
+
+static MprisState st;
+static guint owner_id = 0;
 
 static GDBusConnection *gconn;
 static GVariant *prop_value(const char *iface, const char *prop);   /* defined below */
@@ -77,31 +205,6 @@ void mpris_publish(const MprisState *s)
     pthread_mutex_unlock(&lock);
     if (changed && gconn)
         emit_changed();
-}
-
-MprisCmd mpris_take_command(void)
-{
-    pthread_mutex_lock(&lock);
-    MprisCmd c = { 0, 0 };
-    if (n_cmds > 0) {
-        c.cmd = cmds[0].cmd;
-        c.arg = cmds[0].arg;
-        memmove(cmds, cmds + 1, (n_cmds - 1) * sizeof(Cmd));
-        n_cmds--;
-    }
-    pthread_mutex_unlock(&lock);
-    return c;
-}
-
-static void enqueue(int cmd, int64_t arg)
-{
-    pthread_mutex_lock(&lock);
-    if (n_cmds < 16) {
-        cmds[n_cmds].cmd = cmd;
-        cmds[n_cmds].arg = arg;
-        n_cmds++;
-    }
-    pthread_mutex_unlock(&lock);
 }
 
 static void get_state(MprisState *out)

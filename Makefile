@@ -2,7 +2,7 @@ CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11
 CFLAGS  += $(shell pkg-config --cflags sdl2 SDL2_image mpv libcurl gio-2.0 2>/dev/null)
 LIBS    := $(shell pkg-config --libs sdl2 SDL2_image mpv libcurl gio-2.0 2>/dev/null) -lm -lpthread
-SRC     := src/main.c src/player.c src/font.c src/icons.c src/library.c src/queue.c src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c
+SRC     := src/main.c src/player.c src/font.c src/icons.c src/library.c src/queue.c src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c src/fs.c
 OBJ     := $(SRC:src/%.c=build/%.o)
 
 all: build/mikaplay

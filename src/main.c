@@ -36,6 +36,7 @@
 #include "md5.h"
 #include "tags.h"
 #include "mpris.h"
+#include "fs.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.0"
@@ -370,12 +371,12 @@ static const char *find_font(void)
     };
     static char localpath[1024];
     const char *env = getenv("MIKAPLAY_FONT");
-    if (env && access(env, R_OK) == 0) return env;
+    if (env && fs_access(env, R_OK) == 0) return env;
     snprintf(localpath, sizeof localpath, "%s/.local/share/mikaplay/unifont_all.hex",
              getenv("HOME") ? getenv("HOME") : "/tmp");
     cands[4] = localpath;
     for (int i = 1; cands[i]; i++)
-        if (access(cands[i], R_OK) == 0) return cands[i];
+        if (fs_access(cands[i], R_OK) == 0) return cands[i];
     return NULL;
 }
 
@@ -1688,7 +1689,7 @@ static void handle_mouse(SDL_Event *ev)
 static void handle_drop(const char *path)
 {
     struct stat st;
-    if (stat(path, &st)) { set_status("drop failed"); return; }
+    if (fs_stat(path, &st)) { set_status("drop failed"); return; }
     if (S_ISDIR(st.st_mode)) {
         LibEntry *e = NULL;
         int n = lib_scan(path, &e);
@@ -1789,7 +1790,7 @@ static void load_queue(void)
         size_t l = strlen(line);
         while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
         if (!l) continue;
-        if (access(line, R_OK)) continue;         /* file gone (NAS down?) */
+        if (fs_access(line, R_OK)) continue;         /* file gone (NAS down?) */
         {
             const char *slash = strrchr(line, '/');
             q_add(&A.q, line, slash ? slash + 1 : line, 0);
@@ -2420,6 +2421,14 @@ int main(int argc, char **argv)
                 break;
             case MPRIS_VOLUME:
                 set_volume((int)(c.arg / 100));
+                break;
+            case MPRIS_VOLUMEDELTA:
+                set_volume(A.vol + (int)(c.arg / 100));
+                break;
+            case MPRIS_MUTE:
+                A.muted = !A.muted;
+                player_set_mute(A.pl, A.muted);
+                set_status(A.muted ? "muted" : "unmuted");
                 break;
             default:
                 break;
