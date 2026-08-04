@@ -4,6 +4,7 @@
 #ifndef MIKA_PLAYER_H
 #define MIKA_PLAYER_H
 
+#include <stdint.h>
 #include "queue.h"
 
 typedef struct Player Player;
@@ -11,8 +12,19 @@ typedef struct Player Player;
 Player *player_create(const char *aout_override);  /* NULL = default audio out */
 void    player_destroy(Player *p);
 
-/* load + start playing a file. blocks up to ~1s waiting for file-loaded. */
-int  player_load(Player *p, const char *path);
+/* load + start playing a file, with next_path (may be NULL) preloaded as the
+ * second playlist entry so mpv can switch to it gaplessly (demuxer is warmed
+ * while the current track still plays). blocks up to ~1s for file-loaded. */
+int  player_play_with_next(Player *p, const char *path, const char *next_path);
+/* load + start playing a file, with next_path (may be NULL) preloaded as the
+ * second playlist entry so mpv can switch to it gaplessly (demuxer is warmed
+ * while the current track still plays). blocks up to ~1s for file-loaded. */
+int  player_play_with_next(Player *p, const char *path, const char *next_path);
+/* after an EOF auto-advance: drop the finished entry (index 0) and preload
+ * the new following entry */
+void player_gapless_shift(Player *p, const char *next_path);
+int  player_playlist_count(Player *p);
+void player_dbg_playlist(Player *p);
 void player_set_pause(Player *p, int paused);
 int  player_paused(Player *p);
 void player_stop(Player *p);                       /* stops, keeps position state idle */

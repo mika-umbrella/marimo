@@ -33,6 +33,7 @@
 #include "md5.h"
 #include "tags.h"
 #include "mpris.h"
+#include <mpv/client.h>
 
 #define APP_VER "1.0"
 
@@ -963,20 +964,30 @@ static void play_index(int i)
     q_unlock(&A.q);
 
     player_set_repeat_one(A.pl, A.q.repeat == 2);
-    if (player_load(A.pl, path) < 0) {
-        int n;
-        set_status("could not play %s — skipping", name);
-        threshold_check();
-        n = q_next(&A.q);
-        if (n >= 0) {
-            play_index(n);
-        } else {
-            q_lock(&A.q);
-            A.q.cur = -1;
-            q_unlock(&A.q);
-            set_status("queue finished");
+    /* preload the gapless next entry before starting */
+    {
+        char next_path[Q_PATH_MAX] = "";
+        int nxt;
+        q_lock(&A.q);
+        nxt = q_next(&A.q);
+        if (nxt >= 0 && nxt < A.q.n)
+            snprintf(next_path, sizeof next_path, "%s", A.q.items[nxt].path);
+        q_unlock(&A.q);
+        if (player_play_with_next(A.pl, path, next_path[0] ? next_path : NULL) < 0) {
+            int n;
+            set_status("could not play %s — skipping", name);
+            threshold_check();
+            n = q_next(&A.q);
+            if (n >= 0) {
+                play_index(n);
+            } else {
+                q_lock(&A.q);
+                A.q.cur = -1;
+                q_unlock(&A.q);
+                set_status("queue finished");
+            }
+            return;
         }
-        return;
     }
     /* fast tag parser first (FLAC/MP3 — instant, deterministic); mpv fallback */
     if (tag_read_meta(path, &meta) != 0 && !player_meta(A.pl, &meta)) {
@@ -1008,10 +1019,56 @@ static void on_end(int err)
 {
     int next;
     threshold_check();
-    if (err == 2) set_status("playback error — skipping");
+    if (err == 2) {
+        /* the entry failed — skip it explicitly */
+        next = q_next(&A.q);
+        if (next >= 0) {
+            play_index(next);
+        } else {
+            q_lock(&A.q);
+            A.q.cur = -1;
+            q_unlock(&A.q);
+            set_status("playback error, queue finished");
+        }
+        return;
+    }
     next = q_next(&A.q);
     if (next >= 0) {
-        play_index(next);
+        char nextnext_path[Q_PATH_MAX] = "";
+        Meta meta;
+        char name[Q_NAME_MAX] = "";
+        q_lock(&A.q);
+        A.q.cur = next;
+        {
+            int n2 = q_next(&A.q);
+            if (n2 >= 0 && n2 < A.q.n)
+                snprintf(nextnext_path, sizeof nextnext_path, "%s", A.q.items[n2].path);
+        }
+        {
+            QItem *it = &A.q.items[next];
+            snprintf(name, sizeof name, "%s", it->meta.title[0] ? it->meta.title : it->name);
+            it->scrobbled = 0;
+            it->np_sent = 0;
+            if (tag_read_meta(it->path, &meta) != 0)
+                memset(&meta, 0, sizeof meta);
+        }
+        q_unlock(&A.q);
+        if (!meta.have_meta)
+            player_meta(A.pl, &meta);
+        q_lock(&A.q);
+        if (A.q.cur == next && meta.have_meta)
+            A.q.items[next].meta = meta;
+        q_unlock(&A.q);
+        A.last_meta = meta;
+        snprintf(A.last_name, sizeof A.last_name, "%s",
+                 meta.title[0] ? meta.title : name);
+        A.last_time = 0;
+        /* mpv has already switched to the preloaded next entry — just drop
+         * the finished one and warm the new following entry */
+        player_gapless_shift(A.pl, nextnext_path[0] ? nextnext_path : NULL);
+        load_art();
+        scrobble_now_playing(&meta);
+        set_status("\xe2\x96\xb6 %s", meta.title[0] ? meta.title : name);
     } else {
         q_lock(&A.q);
         A.q.cur = -1;
@@ -1927,6 +1984,7 @@ static int selftest(const char *cfgfile_global)
     return fails ? 1 : 0;
 }
 
+
 static int headless(const char *dir)
 {
     LibEntry *e = NULL;
@@ -1946,7 +2004,7 @@ static int headless(const char *dir)
     q_init(&A.q, 0, 0);
     {
         int added = 0;
-        for (int i = 0; i < n && added < 2; i++) {
+        for (int i = 0; i < n && added < 3; i++) {
             if (e[i].kind == L_FILE) {
                 q_lock(&A.q);
                 q_add(&A.q, e[i].path, e[i].name, e[i].size);
@@ -1954,8 +2012,10 @@ static int headless(const char *dir)
                 added++;
             }
         }
+        if (added < 3) { printf("FAIL: need >= 3 audio files\n"); return 1; }
     }
     play_index(0);
+    player_dbg_playlist(A.pl);
     t0 = (int)time(NULL);
     while (player_state(A.pl) != 1 && time(NULL) - t0 < 6) {
         player_poll(A.pl);
@@ -1992,8 +2052,40 @@ static int headless(const char *dir)
         return 1;
     }
     printf("auto-advanced to track 2: %s — OK\n", A.q.items[1].name);
+    player_dbg_playlist(A.pl);
+    if (player_playlist_count(A.pl) != 2) {
+        printf("FAIL: playlist should be [2,3] but has %d entries\n", player_playlist_count(A.pl));
+        return 1;
+    }
+    printf("gapless preload: playlist holds 2 entries — OK\n");
 
-    /* finish track 2 → queue end */
+    /* finish track 2 → advance to 3 (no next to preload) */
+    {
+        double len = player_length(A.pl);
+        if (len > 2) player_seek(A.pl, len - 1.5);
+    }
+    t1 = (int)time(NULL);
+    while (A.q.cur != 2 && time(NULL) - t1 < 10) {
+        int pe = player_poll(A.pl);
+        if (pe) on_end(pe);
+        SDL_Delay(20);
+    }
+    if (A.q.cur != 2) {
+        printf("FAIL: track 3 advance (cur=%d)\n", A.q.cur);
+        return 1;
+    }
+    /* the remove command is async in mpv's queue — give it a moment */
+    t1 = (int)time(NULL);
+    while (player_playlist_count(A.pl) != 1 && time(NULL) - t1 < 3)
+        SDL_Delay(50);
+    if (player_playlist_count(A.pl) != 1) {
+        printf("FAIL: playlist should have 1 entry, has %d\n", player_playlist_count(A.pl));
+        player_dbg_playlist(A.pl);
+        return 1;
+    }
+    printf("auto-advanced to track 3, playlist collapsed to 1 — OK\n");
+
+    /* finish track 3 → queue end */
     {
         double len = player_length(A.pl);
         if (len > 2) player_seek(A.pl, len - 1.5);
@@ -2103,12 +2195,32 @@ static int makeicon(const char *out)
     return rc == 0 ? 0 : 1;
 }
 
+static int screenshot(const char *out)
+{
+    int rc;
+    SDL_Surface *surf;
+    /* let the window map on wayland before grabbing pixels */
+    for (int i = 0; i < 24; i++) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) { /* drain */ }
+        render();
+        SDL_Delay(16);
+    }
+    surf = SDL_CreateRGBSurfaceWithFormat(0, A.w, A.h, 32, SDL_PIXELFORMAT_ARGB8888);
+    SDL_RenderReadPixels(A.ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
+    rc = IMG_SavePNG(surf, out);
+    SDL_FreeSurface(surf);
+    printf("screenshot saved to %s\n", out);
+    return rc == 0 ? 0 : 1;
+}
+
 /* ---------------- main ---------------- */
 
 int main(int argc, char **argv)
 {
     const char *music = NULL;
     const char *aout = getenv("MIKAPLAY_AOUT");
+    const char *shot_path = NULL;
     int do_selftest = 0, do_headless = 0, do_smoke = 0;
     const char *headless_dir = NULL;
     const char *fontpath;
@@ -2131,6 +2243,7 @@ int main(int argc, char **argv)
             SDL_Quit();
             return rc;
         }
+        else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot_path = argv[++i];
         else { fprintf(stderr, "usage: %s [--selftest|--headless=DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
     }
 
@@ -2231,6 +2344,7 @@ int main(int argc, char **argv)
     A.running = 1;
 
     if (do_smoke) return smoke();
+    if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
         SDL_Event ev;

@@ -56,15 +56,19 @@ void player_destroy(Player *p)
     free(p);
 }
 
-int player_load(Player *p, const char *path)
+int player_play_with_next(Player *p, const char *path, const char *next_path)
 {
-    const char *cmd[] = { "loadfile", path, "replace", NULL };
+    const char *clear[] = { "playlist-clear", NULL };
+    const char *load[] = { "loadfile", path, NULL };
+    const char *app[] = { "loadfile", next_path, "append-play", NULL };
     int loaded = 0;
-    if (mpv_command(p->h, cmd) < 0) return -1;
+    if (mpv_command(p->h, clear) < 0) return -1;
+    if (mpv_command(p->h, load) < 0) return -1;
+    if (next_path)
+        mpv_command(p->h, app);   /* preload the gapless next entry */
     /* wait briefly for FILE_LOADED so metadata is readable.
-     * END_FILE with ERROR = the new file failed; STOP/EOF = the OLD file being
-     * replaced — keep waiting in that case (the click-a-track-while-playing
-     * race). */
+     * END_FILE with ERROR = the new file failed; STOP/EOF = old file being
+     * replaced — keep waiting in that case. */
     for (int i = 0; i < 100; i++) {
         mpv_event *ev = mpv_wait_event(p->h, 10);
         if (ev->event_id == MPV_EVENT_NONE) continue;
@@ -75,6 +79,51 @@ int player_load(Player *p, const char *path)
         }
     }
     return loaded ? 0 : 1;
+}
+
+/* after an EOF auto-advance the finished entry is always playlist index 0 —
+ * remove it (playlist-remove takes an INDEX, not the entry id!) and preload
+ * the new following entry. */
+void player_gapless_shift(Player *p, const char *next_path)
+{
+    const char *rm[] = { "playlist-remove", "0", NULL };
+    const char *app[] = { "loadfile", next_path, "append-play", NULL };
+    mpv_command(p->h, rm);
+    if (next_path)
+        mpv_command(p->h, app);
+}
+
+int player_playlist_count(Player *p)
+{
+    int64_t n = 0;
+    mpv_get_property(p->h, "playlist-count", MPV_FORMAT_INT64, &n);
+    return (int)n;
+}
+
+void player_dbg_playlist(Player *p)
+{
+    mpv_node node;
+    if (mpv_get_property(p->h, "playlist", MPV_FORMAT_NODE, &node) == 0) {
+        printf("  [pl] ");
+        if (node.format == MPV_FORMAT_NODE_ARRAY) {
+            for (int i = 0; i < node.u.list->num; i++) {
+                mpv_node *e = &node.u.list->values[i];
+                if (e->format != MPV_FORMAT_NODE_MAP) continue;
+                int64_t id = 0;
+                const char *fn = "?";
+                for (int k = 0; k < e->u.list->num; k++) {
+                    if (!strcmp(e->u.list->keys[k], "id"))
+                        id = e->u.list->values[k].u.int64;
+                    if (!strcmp(e->u.list->keys[k], "filename"))
+                        fn = e->u.list->values[k].u.string;
+                }
+                const char *b = strrchr(fn, '/');
+                printf("[%lld %s] ", (long long)id, b ? b + 1 : fn);
+            }
+        }
+        printf("\n");
+        mpv_free_node_contents(&node);
+    }
 }
 
 void player_set_pause(Player *p, int paused)
