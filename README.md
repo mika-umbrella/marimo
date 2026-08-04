@@ -87,7 +87,10 @@ test modes: `--selftest`, `--headless /path/to/album`, `--smoke`, `--makeicon as
 2. get a ListenBrainz token at <https://listenbrainz.org/profile>
 3. `⚙` → paste them in → **authorize last.fm** → approve in your browser
 
-config and queue live in `~/.config/marimo/`.
+config and queue live in `~/.config/marimo/`. `refresh=N` sets the library
+auto-refresh interval in seconds (default 5, `0` disables): the app stats the
+current folder each interval and rescans only when it changed, so new/renamed/
+deleted albums show up without re-entering the folder.
 
 ## architecture
 

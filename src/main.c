@@ -154,8 +154,9 @@ static void set_status(const char *fmt, ...)
 static int path_under(const char *path, const char *root)
 {
     size_t rl = strlen(root);
-    if (rl > 1 && root[rl - 1] == '/') rl--;
-    return !strncmp(path, root, rl) && (path[rl] == 0 || path[rl] == '/');
+    if (rl > 1 && (root[rl - 1] == '/' || root[rl - 1] == '\\')) rl--;
+    return !strncmp(path, root, rl) &&
+           (path[rl] == 0 || path[rl] == '/' || path[rl] == '\\');
 }
 
 /* drop the ".." entry when we're at the library root */
@@ -1463,6 +1464,56 @@ static void set_volume(int v)
     player_set_volume(A.pl, A.vol);
 }
 
+/* ---------------- auto refresh ---------------- */
+
+/* one stat per interval on the current library dir; rescan only when the
+ * dir's mtime/size changed (new/renamed/deleted albums over CIFS).
+ * selection is kept by name so the view doesn't jump around. */
+static void poll_refresh(void)
+{
+    struct stat st;
+    static struct stat last;
+    static char last_dir[L_PATH_MAX];
+    static int have_last;
+    int had_sel, vis;
+
+    if (A.mini || A.modal || A.tab != 0) return;
+    if (strcmp(last_dir, A.cur_dir)) {          /* moved — re-baseline */
+        snprintf(last_dir, sizeof last_dir, "%s", A.cur_dir);
+        have_last = 0;
+    }
+    if (fs_stat(A.cur_dir, &st)) return;        /* NAS unreachable — keep list */
+    if (have_last && st.st_mtime == last.st_mtime && st.st_size == last.st_size)
+        return;
+    last = st;
+    have_last = 1;
+
+    {
+        char keep[512];
+        int kind = -1;
+        had_sel = A.sel >= 0 && A.sel < A.n_entries;
+        if (had_sel) {
+            snprintf(keep, sizeof keep, "%s", A.entries[A.sel].name);
+            kind = A.entries[A.sel].kind;
+        }
+        lib_free_entries(A.entries);
+        A.entries = NULL;
+        A.n_entries = lib_scan(A.cur_dir, &A.entries);
+        trim_up();
+        A.sel = -1;
+        if (had_sel)
+            for (int i = 0; i < A.n_entries; i++)
+                if (A.entries[i].kind == kind && !strcmp(A.entries[i].name, keep)) { A.sel = i; break; }
+        if (A.sel < 0 && A.n_entries > 0) A.sel = 0;
+        vis = A.L.list.h / ROW_H;
+        if (vis > 0 && A.scroll > A.n_entries - vis) A.scroll = A.n_entries - vis;
+        if (A.scroll < 0) A.scroll = 0;
+        if (A.sel >= 0 && (A.sel < A.scroll || A.sel >= A.scroll + vis))
+            A.scroll = A.sel;
+        set_status("library refreshed");
+    }
+}
+
 static void next_track(void)
 {
     int n;
@@ -2656,6 +2707,16 @@ int main(int argc, char **argv)
                     if (A.q.cur < A.q.n) A.q.items[A.q.cur].meta = m;
                     q_unlock(&A.q);
                 }
+            }
+        }
+
+        /* library auto-refresh: one stat per interval, rescan on change */
+        {
+            static Uint64 last_refresh_at;
+            if (cfg.refresh > 0 && !A.mini &&
+                SDL_GetTicks64() - last_refresh_at >= (Uint64)cfg.refresh * 1000) {
+                last_refresh_at = SDL_GetTicks64();
+                poll_refresh();
             }
         }
 

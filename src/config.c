@@ -28,6 +28,7 @@ void config_defaults(void)
     cfg.volume = 80;
     cfg.shuffle = 0;
     cfg.repeat = 0;
+    cfg.refresh = 5;
     cfg.lf_key[0] = cfg.lf_secret[0] = cfg.lf_session[0] = cfg.lf_user[0] = cfg.lb_token[0] = 0;
 }
 
@@ -60,6 +61,7 @@ void config_load(const char *path)
         else if (!strcmp(line, "volume")) cfg.volume = atoi(val);
         else if (!strcmp(line, "shuffle")) cfg.shuffle = atoi(val);
         else if (!strcmp(line, "repeat")) cfg.repeat = atoi(val);
+        else if (!strcmp(line, "refresh")) cfg.refresh = atoi(val);
         else if (!strcmp(line, "lf_key")) set_str(cfg.lf_key, sizeof cfg.lf_key, val);
         else if (!strcmp(line, "lf_secret")) set_str(cfg.lf_secret, sizeof cfg.lf_secret, val);
         else if (!strcmp(line, "lf_session")) set_str(cfg.lf_session, sizeof cfg.lf_session, val);
@@ -81,6 +83,7 @@ void config_save(void)
     fprintf(fp, "volume=%d\n", cfg.volume);
     fprintf(fp, "shuffle=%d\n", cfg.shuffle);
     fprintf(fp, "repeat=%d\n", cfg.repeat);
+    fprintf(fp, "refresh=%d\n", cfg.refresh);
     fprintf(fp, "lf_key=%s\n", cfg.lf_key);
     fprintf(fp, "lf_secret=%s\n", cfg.lf_secret);
     fprintf(fp, "lf_session=%s\n", cfg.lf_session);
