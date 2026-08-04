@@ -2142,10 +2142,9 @@ static int smoke(void)
 
 static int makeicon(const char *out)
 {
-    /* a marimo in the open: transparent background so it sits on any
-     * desktop theme. bigger ball (R=50) dead-centered on the 128px
-     * canvas, headphones on, tiny face. exact RGBA via a direct pixel
-     * buffer; no renderer or font needed. */
+    /* just the little guy: a big moss ball, dead-centered, no props.
+     * R=60 on the 128px canvas — chunky. exact RGBA via a direct
+     * pixel buffer; no renderer or font needed. */
     const int S = 128;
     SDL_Surface *surf;
     Uint32 *px;
@@ -2158,9 +2157,9 @@ static int makeicon(const char *out)
         for (x = 0; x < S; x++)
             px[y * S + x] = 0;          /* fully transparent */
 
-    /* the ball — centered at (64,64) so the sprite is symmetric */
+    /* the ball — centered at (64,64), R=60 */
     {
-        const double cx = 64, cy = 64, R = 50;
+        const double cx = 64, cy = 64, R = 60;
         for (y = 0; y < S; y++) {
             for (x = 0; x < S; x++) {
                 double dx = x - cx, dy = y - cy;
@@ -2177,16 +2176,16 @@ static int makeicon(const char *out)
                 /* mottled texture: a few darker patches */
                 {
                     double ax, ay;
-                    ax = (x - (cx - 22)) / 14.0; ay = (y - (cy + 20)) / 10.0;
+                    ax = (x - (cx - 26)) / 17.0; ay = (y - (cy + 24)) / 12.0;
                     if (ax * ax + ay * ay < 1) { r = (int)(r * 0.78); g = (int)(g * 0.78); b = (int)(b * 0.78); }
-                    ax = (x - (cx + 25)) / 16.0; ay = (y - (cy + 28)) / 12.0;
+                    ax = (x - (cx + 30)) / 19.0; ay = (y - (cy + 34)) / 14.0;
                     if (ax * ax + ay * ay < 1) { r = (int)(r * 0.70); g = (int)(g * 0.70); b = (int)(b * 0.70); }
-                    ax = (x - (cx - 9)) / 18.0; ay = (y - (cy - 13)) / 9.0;
+                    ax = (x - (cx - 11)) / 21.0; ay = (y - (cy - 16)) / 11.0;
                     if (ax * ax + ay * ay < 1) { r = (int)(r * 0.88); g = (int)(g * 0.88); b = (int)(b * 0.88); }
                 }
                 /* top-left sheen */
                 {
-                    double hx = (x - (cx - 18)) / 11.0, hy = (y - (cy - 23)) / 8.0;
+                    double hx = (x - (cx - 22)) / 13.0, hy = (y - (cy - 28)) / 9.0;
                     if (hx * hx + hy * hy < 1) {
                         r += (int)((255 - r) * 0.45); g += (int)((255 - g) * 0.45); b += (int)((255 - b) * 0.45);
                     }
@@ -2194,36 +2193,9 @@ static int makeicon(const char *out)
                 px[y * S + x] = 0xFF000000 | ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
             }
         }
-        /* headphone band: ring arcing over the top */
-        {
-            const double bcx = 64, bcy = 72, BR = 44;
-            const int br = 26, bg = 30, bb = 33;
-            for (y = 0; y < S; y++) {
-                for (x = 0; x < S; x++) {
-                    double dx = x - bcx, dy = y - bcy;
-                    double d = sqrt(dx * dx + dy * dy);
-                    if (y > bcy) continue;                 /* arc only */
-                    if (d > BR - 2.5 && d < BR + 2.5) {
-                        px[y * S + x] = 0xFF000000 | ((Uint32)br << 16) | ((Uint32)bg << 8) | (Uint32)bb;
-                    }
-                }
-            }
-            /* ear cups on the ball's sides (small lip outside the ball) */
-            for (int c = 0; c < 2; c++) {
-                int ecx = c ? 110 : 18, ecy = 62, ER = 8;
-                for (y = ecy - ER; y <= ecy + ER; y++) {
-                    for (x = ecx - ER; x <= ecx + ER; x++) {
-                        double dx = x - ecx, dy = y - ecy;
-                        if (dx * dx + dy * dy <= ER * ER) {
-                            px[y * S + x] = 0xFF000000 | ((Uint32)br << 16) | ((Uint32)bg << 8) | (Uint32)bb;
-                        }
-                    }
-                }
-            }
-        }
         /* face: eyes */
         for (int e = 0; e < 2; e++) {
-            int ecx = e ? 79 : 49, ecy = 58;
+            int ecx = e ? 80 : 48, ecy = 57;
             for (y = ecy - 2; y <= ecy + 2; y++)
                 for (x = ecx - 2; x <= ecx + 2; x++)
                     if ((x - ecx) * (x - ecx) + (y - ecy) * (y - ecy) <= 4) {
@@ -2232,7 +2204,7 @@ static int makeicon(const char *out)
         }
         /* blush */
         for (int e = 0; e < 2; e++) {
-            int ecx = e ? 94 : 34, ecy = 68, ER = 5;
+            int ecx = e ? 98 : 30, ecy = 69, ER = 6;
             for (y = ecy - ER; y <= ecy + ER; y++)
                 for (x = ecx - ER; x <= ecx + ER; x++) {
                     double dx = x - ecx, dy = y - ecy;
@@ -2243,8 +2215,8 @@ static int makeicon(const char *out)
         }
         /* smile: little arc */
         for (double th = 0.15 * 3.14159; th <= 0.85 * 3.14159; th += 0.08) {
-            int sx = (int)(64 + 9.2 * cos(th));
-            int sy = (int)(66 + 9.2 * sin(th));
+            int sx = (int)(64 + 11 * cos(th));
+            int sy = (int)(67 + 11 * sin(th));
             px[sy * S + sx] = 0xFF000000 | (8u << 16) | (11u << 8) | 8u;
         }
     }
@@ -2253,6 +2225,7 @@ static int makeicon(const char *out)
     SDL_FreeSurface(surf);
     return rc == 0 ? 0 : 1;
 }
+
 
 
 
