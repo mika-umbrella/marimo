@@ -1,4 +1,4 @@
-/* mpris.h — MPRIS2 (D-Bus) integration so KDE/playerctl can control mikaplay.
+/* mpris.h — MPRIS2 (D-Bus) integration so KDE/playerctl can control marimo.
  * The D-Bus thread only reads the published state and enqueues commands;
  * all mpv access stays on the main thread. */
 #ifndef MIKA_MPRIS_H

@@ -1,4 +1,4 @@
-/* config.h — simple key=value config (~/.config/mikaplay/config.ini) */
+/* config.h — simple key=value config (~/.config/marimo/config.ini) */
 #ifndef MIKA_CONFIG_H
 #define MIKA_CONFIG_H
 

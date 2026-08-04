@@ -1,4 +1,4 @@
-/* mikaplay — a tiny retro pixel music player.
+/* marimo — a tiny retro pixel music player.
  * SDL2 + libmpv + GNU Unifont. No GTK, no CSS, no feelings of guilt.
  *
  *  browse    : file-structure browser (breadcrumb + folder list)
@@ -39,7 +39,7 @@
 #include "fs.h"
 #include <mpv/client.h>
 
-#define APP_VER "1.0"
+#define APP_VER "1.1"
 
 /* ---------------- palette ---------------- */
 static const SDL_Color C_BG0    = { 13, 13, 15, 255 };
@@ -361,20 +361,26 @@ static SDL_Texture *load_tex_b64(const char *b64)
 static const char *find_font(void)
 {
     static const char *cands[] = {
-        NULL, /* MIKAPLAY_FONT */
+        NULL, /* MARIMO_FONT / MIKAPLAY_FONT */
         "./assets/unifont_all.hex",
         "../assets/unifont_all.hex",
         "assets/unifont_all.hex",
-        NULL, /* ~/.local/share/mikaplay */
+        NULL, /* ~/.local/share/marimo */
+        NULL, /* ~/.local/share/mikaplay (old name) */
         "/home/nova/mika/mikaplay/assets/unifont_all.hex",
         NULL
     };
     static char localpath[1024];
-    const char *env = getenv("MIKAPLAY_FONT");
+    static char oldpath[1024];
+    const char *env = getenv("MARIMO_FONT");
+    if (!(env && env[0])) env = getenv("MIKAPLAY_FONT");
     if (env && fs_access(env, R_OK) == 0) return env;
-    snprintf(localpath, sizeof localpath, "%s/.local/share/mikaplay/unifont_all.hex",
+    snprintf(localpath, sizeof localpath, "%s/.local/share/marimo/unifont_all.hex",
              getenv("HOME") ? getenv("HOME") : "/tmp");
     cands[4] = localpath;
+    snprintf(oldpath, sizeof oldpath, "%s/.local/share/mikaplay/unifont_all.hex",
+             getenv("HOME") ? getenv("HOME") : "/tmp");
+    cands[5] = oldpath;
     for (int i = 1; cands[i]; i++)
         if (fs_access(cands[i], R_OK) == 0) return cands[i];
     return NULL;
@@ -490,7 +496,7 @@ static void draw_header(void)
     SDL_RenderDrawLine(A.ren, 0, r.y + r.h - 1, A.w, r.y + r.h - 1);
 
     char title[64];
-    snprintf(title, sizeof title, "mikaplay %s", APP_VER);
+    snprintf(title, sizeof title, "marimo %s", APP_VER);
     draw_text(8, r.y + 5, title, C_DIM, 1);
 
     /* window buttons */
@@ -558,7 +564,7 @@ static void draw_playerbar(void)
 
     draw_art();
 
-    marquee(A.L.t1, title[0] ? title : "mikaplay", titlec);
+    marquee(A.L.t1, title[0] ? title : "marimo", titlec);
     marquee(A.L.t2, artist, C_DIM);
     marquee(A.L.t3, album, C_DIM);
 
@@ -1816,7 +1822,7 @@ static int selftest(const char *cfgfile_global)
     SDL_Window *win;
     SDL_Renderer *ren;
 
-    printf("== mikaplay selftest ==\n");
+    printf("== marimo selftest ==\n");
     if (SDL_Init(SDL_INIT_VIDEO) < 0) { printf("FAIL: SDL_Init\n"); return 1; }
     win = SDL_CreateWindow("selftest", 0, 0, 64, 64, 0);
     ren = SDL_CreateRenderer(win, -1, 0);
@@ -1871,7 +1877,7 @@ static int selftest(const char *cfgfile_global)
 
     /* config roundtrip */
     {
-        const char *p = "/tmp/mikaplay_selftest.ini";
+        const char *p = "/tmp/marimo_selftest.ini";
         FILE *f = fopen(p, "w");
         if (f) {
             fprintf(f, "volume=42\nlf_key=abc123\nmusic_dir=/tmp/music\n");
@@ -1994,7 +2000,7 @@ static int headless(const char *dir)
     LibEntry *e = NULL;
     int n, files = 0;
     int t0, t1;
-    printf("== mikaplay headless play test ==\n");
+    printf("== marimo headless play test ==\n");
     n = lib_scan(dir, &e);
     if (n < 0) { printf("FAIL: cannot scan %s\n", dir); return 1; }
     for (int i = 0; i < n; i++) if (e[i].kind == L_FILE) files++;
@@ -2183,11 +2189,11 @@ static int makeicon(const char *out)
         int nw = font_char_w(&f, 0x266A);
         font_draw(&f, (S - nw * 5) / 2, 8, "\xe2\x99\xaa", 5, 255, 255, 255);
     }
-    /* MIKA */
+    /* MARIMO */
     {
-        const char *txt = "MIKA";
-        int tw = font_w(&f, txt, 2);
-        font_draw(&f, (S - tw) / 2, 92, txt, 2, 255, 255, 255);
+        const char *txt = "MARIMO";
+        int tw = font_w(&f, txt, 1);
+        font_draw(&f, (S - tw) / 2, 95, txt, 1, 255, 255, 255);
     }
     surf = SDL_CreateRGBSurfaceWithFormat(0, S, S, 32, SDL_PIXELFORMAT_ARGB8888);
     SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
@@ -2219,6 +2225,23 @@ static int screenshot(const char *out)
 }
 
 /* ---------------- main ---------------- */
+
+/* one-time migration helper: if dst is missing but src exists, copy it.
+ * used for the old-name (mikaplay) -> marimo config/queue move so the
+ * last.fm session, listenbrainz token and queue survive the rename. */
+static void copy_file_if_missing(const char *dst, const char *src)
+{
+    FILE *a, *b;
+    char buf[4096];
+    size_t n;
+    if (!fs_access(dst, R_OK) || fs_access(src, R_OK)) return;
+    a = fs_fopen(src, "rb");
+    b = fs_fopen(dst, "wb");
+    if (a && b)
+        while ((n = fread(buf, 1, sizeof buf, a)) > 0) fwrite(buf, 1, n, b);
+    if (a) fclose(a);
+    if (b) fclose(b);
+}
 
 int main(int argc, char **argv)
 {
@@ -2256,15 +2279,19 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "usage: %s [--selftest|--headless=DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
     }
 
-    snprintf(cfgfile, sizeof cfgfile, "%s/.config/mikaplay/config.ini", home);
+    snprintf(cfgfile, sizeof cfgfile, "%s/.config/marimo/config.ini", home);
     {
-        char d[1024];
-        snprintf(d, sizeof d, "%s/.config/mikaplay", home);
+        char d[1024], oldcfg[1100];
+        snprintf(d, sizeof d, "%s/.config/marimo", home);
 #ifdef _WIN32
         mkdir(d);
 #else
         mkdir(d, 0755);
 #endif
+        /* old-name fallback: first launch after the rename copies the
+         * mikaplay config (auth tokens included) so nothing re-auths */
+        snprintf(oldcfg, sizeof oldcfg, "%s/.config/mikaplay/config.ini", home);
+        copy_file_if_missing(cfgfile, oldcfg);
     }
     config_load(cfgfile);
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);
@@ -2286,12 +2313,12 @@ int main(int argc, char **argv)
     }
     int imgflags = IMG_INIT_JPG | IMG_INIT_PNG | IMG_INIT_WEBP;
     if ((IMG_Init(imgflags) & imgflags) != imgflags)
-        fprintf(stderr, "mikaplay: some image formats unavailable: %s\n", IMG_GetError());
+        fprintf(stderr, "marimo: some image formats unavailable: %s\n", IMG_GetError());
 
-    A.win = SDL_CreateWindow("mikaplay " APP_VER, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+    A.win = SDL_CreateWindow("marimo " APP_VER, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                              480, 640, SDL_WINDOW_BORDERLESS);
     if (!A.win) { fprintf(stderr, "window failed: %s\n", SDL_GetError()); return 1; }
-    /* drag by the mikaplay bar (borderless, fixed size) */
+    /* drag by the marimo bar (borderless, fixed size) */
     SDL_SetWindowHitTest(A.win, hit_test, NULL);
     A.ren = SDL_CreateRenderer(A.win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!A.ren) {
@@ -2302,7 +2329,7 @@ int main(int argc, char **argv)
 
     /* window icon: the badge-style png, or the pixel note as fallback */
     {
-        SDL_Surface *ic = IMG_Load("assets/mikaplay.png");
+        SDL_Surface *ic = IMG_Load("assets/marimo.png");
         if (!ic) {
             ic = SDL_CreateRGBSurfaceWithFormat(0, 32, 32, 32, SDL_PIXELFORMAT_ARGB8888);
             SDL_LockSurface(ic);
@@ -2319,17 +2346,17 @@ int main(int argc, char **argv)
 
     fontpath = find_font();
     if (!fontpath) {
-        fprintf(stderr, "mikaplay: unifont_all.hex not found (put it in assets/ or set MIKAPLAY_FONT)\n");
+        fprintf(stderr, "marimo: unifont_all.hex not found (put it in assets/ or set MIKAPLAY_FONT)\n");
         return 1;
     }
     if (font_load(&A.font, A.ren, fontpath) < 10000) {
-        fprintf(stderr, "mikaplay: font load failed\n");
+        fprintf(stderr, "marimo: font load failed\n");
         return 1;
     }
 
     A.pl = player_create(aout);
     if (!A.pl) {
-        fprintf(stderr, "mikaplay: mpv init failed — is mpv installed?\n");
+        fprintf(stderr, "marimo: mpv init failed — is mpv installed?\n");
         return 1;
     }
     scrobble_init();
@@ -2343,7 +2370,12 @@ int main(int argc, char **argv)
              cfg.last_dir[0] && path_under(cfg.last_dir, cfg.music_dir) ? cfg.last_dir : cfg.music_dir);
     A.n_entries = lib_scan(A.cur_dir, &A.entries);
     trim_up();
-    snprintf(queue_path, sizeof queue_path, "%s/.config/mikaplay/queue.dat", home);
+    snprintf(queue_path, sizeof queue_path, "%s/.config/marimo/queue.dat", home);
+    {
+        char oldq[1100];
+        snprintf(oldq, sizeof oldq, "%s/.config/mikaplay/queue.dat", home);
+        copy_file_if_missing(queue_path, oldq);
+    }
     load_queue();
     if (A.n_entries < 0) {
         A.n_entries = 0;
@@ -2380,7 +2412,7 @@ int main(int argc, char **argv)
             ms.can_next = A.q.n > 0;
             ms.can_prev = A.q.n > 0;
             ms.title[0] = ms.artist[0] = ms.album[0] = 0;
-            snprintf(ms.trackid, sizeof ms.trackid, "/mikaplay/track/none");
+            snprintf(ms.trackid, sizeof ms.trackid, "/marimo/track/none");
             q_lock(&A.q);
             if (A.q.cur >= 0 && A.q.cur < A.q.n) {
                 QItem *it = &A.q.items[A.q.cur];
@@ -2388,7 +2420,7 @@ int main(int argc, char **argv)
                          it->meta.title[0] ? it->meta.title : it->name);
                 snprintf(ms.artist, sizeof ms.artist, "%s", it->meta.artist);
                 snprintf(ms.album, sizeof ms.album, "%s", it->meta.album);
-                snprintf(ms.trackid, sizeof ms.trackid, "/mikaplay/track/%d", A.q.cur);
+                snprintf(ms.trackid, sizeof ms.trackid, "/marimo/track/%d", A.q.cur);
                 if (it->meta.duration_ms > 0)
                     ms.duration_us = (int64_t)it->meta.duration_ms * 1000;
             }

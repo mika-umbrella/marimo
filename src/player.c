@@ -19,7 +19,7 @@ struct TagReader {
 static void setopt(mpv_handle *h, const char *name, const char *val)
 {
     if (mpv_set_option_string(h, name, val) < 0)
-        fprintf(stderr, "mikaplay: mpv option '%s' failed\n", name);
+        fprintf(stderr, "marimo: mpv option '%s' failed\n", name);
 }
 
 Player *player_create(const char *aout_override)
@@ -37,7 +37,7 @@ Player *player_create(const char *aout_override)
     setopt(p->h, "osc", "no");
     setopt(p->h, "osd-level", "0");
     setopt(p->h, "volume-max", "100");
-    setopt(p->h, "audio-client-name", "mikaplay");
+    setopt(p->h, "audio-client-name", "marimo");
     if (aout_override)
         setopt(p->h, "ao", aout_override);
     if (mpv_initialize(p->h) < 0) {
@@ -292,7 +292,7 @@ int player_poll(Player *p)
                 p->pending = 1;
             } else if (e->reason == MPV_END_FILE_REASON_ERROR) {
                 p->pending = 2;
-                fprintf(stderr, "mikaplay: playback error: %s\n",
+                fprintf(stderr, "marimo: playback error: %s\n",
                         mpv_error_string(e->error));
             }
             break;

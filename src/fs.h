@@ -1,5 +1,5 @@
 /* fs.h — UTF-8-safe file access.
- * mikaplay carries all paths as UTF-8. On windows the CRT's fopen/stat/
+ * marimo carries all paths as UTF-8. On windows the CRT's fopen/stat/
  * access use the ANSI codepage and mangle non-ascii names, so those go
  * through the *W APIs with UTF-8 <-> UTF-16 conversion here.
  * On POSIX these are plain wrappers. Use them for any path that may

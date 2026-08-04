@@ -5,9 +5,9 @@ LIBS    := $(shell pkg-config --libs sdl2 SDL2_image mpv libcurl gio-2.0 2>/dev/
 SRC     := src/main.c src/player.c src/font.c src/icons.c src/library.c src/queue.c src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c src/fs.c
 OBJ     := $(SRC:src/%.c=build/%.o)
 
-all: build/mikaplay
+all: build/marimo
 
-build/mikaplay: $(OBJ)
+build/marimo: $(OBJ)
 	$(CC) -o $@ $(OBJ) $(LIBS)
 
 build/%.o: src/%.c $(wildcard src/*.h)
@@ -17,7 +17,7 @@ build/%.o: src/%.c $(wildcard src/*.h)
 clean:
 	rm -rf build
 
-run: build/mikaplay
-	./build/mikaplay
+run: build/marimo
+	./build/marimo
 
 .PHONY: all clean run

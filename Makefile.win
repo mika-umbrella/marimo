@@ -1,7 +1,7 @@
-# Makefile.win — cross-compile mikaplay for windows (mingw-w64 on fedora)
+# Makefile.win — cross-compile marimo for windows (mingw-w64 on fedora)
 #   sudo dnf install mingw64-gcc mingw64-SDL2_image mingw64-sdl2-compat mingw64-curl
 #   make -f Makefile.win
-# runtime needs: mikaplay.exe + libmpv-2.dll (vendor/mpv-win) + assets/unifont_all.hex
+# runtime needs: marimo.exe + libmpv-2.dll (vendor/mpv-win) + assets/unifont_all.hex
 
 CROSS   := x86_64-w64-mingw32-
 CC      := $(CROSS)gcc
@@ -12,18 +12,18 @@ LIBS    := vendor/mpv-win/libmpv.dll.a -lmingw32 -lSDL2 -lSDL2_image -lcurl \
 SRC     := src/main.c src/player.c src/font.c src/icons.c src/library.c src/queue.c \
            src/scrobble.c src/config.c src/md5.c src/tags.c src/mpris.c src/cJSON.c src/fs.c
 
-build-win/mikaplay.exe: $(SRC) $(wildcard src/*.h)
+build-win/marimo.exe: $(SRC) $(wildcard src/*.h)
 	@mkdir -p build-win
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LIBS)
 
-dist: build-win/mikaplay.exe
+dist: build-win/marimo.exe
 	@mkdir -p build-win/dist/assets
-	cp build-win/mikaplay.exe build-win/dist/
+	cp build-win/marimo.exe build-win/dist/
 	cp vendor/mpv-win/libmpv-2.dll build-win/dist/
 	cp /usr/x86_64-w64-mingw32/sys-root/mingw/bin/*.dll build-win/dist/
-	cp assets/mikaplay.png assets/unifont_all.hex build-win/dist/assets/
-	cd build-win/dist && zip -qr ../mikaplay-windows.zip .
-	@echo "== build-win/mikaplay-windows.zip =="
+	cp assets/marimo.png assets/unifont_all.hex build-win/dist/assets/
+	cd build-win/dist && zip -qr ../marimo-windows.zip .
+	@echo "== build-win/marimo-windows.zip =="
 
 clean:
 	rm -rf build-win

@@ -70,7 +70,7 @@ static int http_post(const char *url, const char *body, const char *auth_hdr, Bu
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 6L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "mikaplay/1.0");
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "marimo/1.1");
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, out);
     if (auth_hdr) {
@@ -81,7 +81,7 @@ static int http_post(const char *url, const char *body, const char *auth_hdr, Bu
     if (hdrs) curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
     if (res != CURLE_OK) {
-        fprintf(stderr, "mikaplay: scrobble http error: %s\n", curl_easy_strerror(res));
+        fprintf(stderr, "marimo: scrobble http error: %s\n", curl_easy_strerror(res));
         free(out->data);
         memset(out, 0, sizeof(*out));
         return -1;
@@ -183,7 +183,7 @@ static void lf_scrobble(const Meta *m)
         if (j) {
             cJSON *err = cJSON_GetObjectItem(j, "error");
             if (err && err->valueint)
-                fprintf(stderr, "mikaplay: last.fm scrobble error %d\n", err->valueint);
+                fprintf(stderr, "marimo: last.fm scrobble error %d\n", err->valueint);
             cJSON_Delete(j);
         }
         free(out.data);
@@ -306,7 +306,7 @@ static void *auth_thread(void *x)
         snprintf(cmd, sizeof cmd, "xdg-open '%s' >/dev/null 2>&1 &", url);
 #endif
         if (system(cmd) != 0)
-            fprintf(stderr, "mikaplay: could not open browser for last.fm auth\n");
+            fprintf(stderr, "marimo: could not open browser for last.fm auth\n");
     }
     auth_state = 1;
     set_msg("approve the request in your browser...", "");

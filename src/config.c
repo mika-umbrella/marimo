@@ -75,7 +75,7 @@ void config_save(void)
     if (!cfg_path[0]) return;
     fp = fopen(cfg_path, "w");
     if (!fp) return;
-    fprintf(fp, "# mikaplay config\n");
+    fprintf(fp, "# marimo config\n");
     fprintf(fp, "music_dir=%s\n", cfg.music_dir);
     fprintf(fp, "last_dir=%s\n", cfg.last_dir);
     fprintf(fp, "volume=%d\n", cfg.volume);

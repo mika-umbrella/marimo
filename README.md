@@ -1,4 +1,4 @@
-# mikaplay
+# marimo
 
 a tiny retro pixel music player for linux. dark grey chrome, winamp-green accents, GNU Unifont for every character, hand-drawn 16×16 icons, and a little sunset badge for an icon.
 
@@ -46,26 +46,26 @@ make
 # fedora: mingw toolchain
 sudo dnf install mingw64-gcc mingw64-SDL2_image mingw64-sdl2-compat mingw64-curl
 
-make -f Makefile.win dist    # -> build-win/mikaplay-windows.zip
+make -f Makefile.win dist    # -> build-win/marimo-windows.zip
 ```
 
 the zip bundles the exe, the runtime dlls, and the assets — extract and run
-`mikaplay.exe`. mpv's windows dev files (headers + import lib) are vendored
+`marimo.exe`. mpv's windows dev files (headers + import lib) are vendored
 in `vendor/mpv-win/`; the 117MB `libmpv-2.dll` ships only in the dist zip.
 tested under wine (set `SDL_RENDER_DRIVER=software` there; real windows uses
 the fast D3D path).
 
 (the glib2 dependency is what powers MPRIS media-key integration — every desktop distro carries it.)
 
-the binary needs `unifont_all.hex` — it looks in `assets/`, next to the binary, or in `~/.local/share/mikaplay/`. grab it from the [GNU unifont releases](https://ftp.gnu.org/gnu/unifont/) (any recent `unifont_all-*.hex`).
+the binary needs `unifont_all.hex` — it looks in `assets/`, next to the binary, or in `~/.local/share/marimo/`. grab it from the [GNU unifont releases](https://ftp.gnu.org/gnu/unifont/) (any recent `unifont_all-*.hex`).
 
 run it:
 
 ```
-./build/mikaplay
+./build/marimo
 ```
 
-test modes: `--selftest`, `--headless /path/to/album`, `--smoke`, `--makeicon assets/mikaplay.png`.
+test modes: `--selftest`, `--headless /path/to/album`, `--smoke`, `--makeicon assets/marimo.png`.
 
 ## controls
 
@@ -87,7 +87,7 @@ test modes: `--selftest`, `--headless /path/to/album`, `--smoke`, `--makeicon as
 2. get a ListenBrainz token at <https://listenbrainz.org/profile>
 3. `⚙` → paste them in → **authorize last.fm** → approve in your browser
 
-config and queue live in `~/.config/mikaplay/`.
+config and queue live in `~/.config/marimo/`.
 
 ## architecture
 

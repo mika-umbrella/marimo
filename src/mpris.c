@@ -1,5 +1,5 @@
 /* mpris.c — MPRIS2 service over GDBus.
- * Exposes org.mpris.MediaPlayer2.mikaplay on the session bus:
+ * Exposes org.mpris.MediaPlayer2.marimo on the session bus:
  *   org.freedesktop.DBus.Properties  (Get/GetAll/Set)
  *   org.mpris.MediaPlayer2           (Identity etc.)
  *   org.mpris.MediaPlayer2.Player    (PlayPause/Play/Pause/Stop/Next/Previous/
@@ -80,7 +80,7 @@ static const struct { int id; UINT vk; int cmd; int arg; } hotkeys[] = {
 };
 #define N_HOTKEYS (int)(sizeof hotkeys / sizeof hotkeys[0])
 
-static const wchar_t HK_CLASS[] = L"mikaplay_hotkeys";
+static const wchar_t HK_CLASS[] = L"marimo_hotkeys";
 static volatile LONG hk_running;
 static DWORD hk_tid;
 
@@ -110,7 +110,7 @@ static DWORD WINAPI hk_thread(LPVOID ud)
     wc.lpszClassName = HK_CLASS;
     wc.hInstance = GetModuleHandleW(NULL);
     if (!RegisterClassW(&wc)) { InterlockedExchange(&hk_running, 0); return 1; }
-    wnd = CreateWindowExW(0, HK_CLASS, L"mikaplay_hotkeys", 0,
+    wnd = CreateWindowExW(0, HK_CLASS, L"marimo_hotkeys", 0,
                           0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
     if (!wnd) { InterlockedExchange(&hk_running, 0); return 1; }
     /* registration failures (key taken by another app) are skipped: the
@@ -151,7 +151,7 @@ void mpris_publish(const MprisState *s) { (void)s; }
 #else
 #include <gio/gio.h>
 
-#define BUS_NAME "org.mpris.MediaPlayer2.mikaplay"
+#define BUS_NAME "org.mpris.MediaPlayer2.marimo"
 #define OBJ_PATH "/org/mpris/MediaPlayer2"
 
 static MprisState st;
@@ -224,8 +224,8 @@ static GVariant *prop_value(const char *iface, const char *prop)
         if (!strcmp(prop, "CanQuit")) return g_variant_new_boolean(TRUE);
         if (!strcmp(prop, "CanRaise")) return g_variant_new_boolean(FALSE);
         if (!strcmp(prop, "HasTrackList")) return g_variant_new_boolean(FALSE);
-        if (!strcmp(prop, "Identity")) return g_variant_new_string("mikaplay");
-        if (!strcmp(prop, "DesktopEntry")) return g_variant_new_string("mikaplay");
+        if (!strcmp(prop, "Identity")) return g_variant_new_string("marimo");
+        if (!strcmp(prop, "DesktopEntry")) return g_variant_new_string("marimo");
         if (!strcmp(prop, "SupportedUriSchemes")) {
             const char *a[] = { "file", NULL };
             return g_variant_new_strv(a, -1);
@@ -252,7 +252,7 @@ static GVariant *prop_value(const char *iface, const char *prop)
             if (s.duration_us > 0)
                 g_variant_builder_add(&b, "{sv}", "mpris:length", g_variant_new_int64(s.duration_us));
             g_variant_builder_add(&b, "{sv}", "mpris:trackid",
-                                  g_variant_new_object_path(s.trackid[0] ? s.trackid : "/mikaplay/track/none"));
+                                  g_variant_new_object_path(s.trackid[0] ? s.trackid : "/marimo/track/none"));
             return g_variant_builder_end(&b);
         }
         if (!strcmp(prop, "Volume")) return g_variant_new_double(s.volume / 100.0);
@@ -477,7 +477,7 @@ static void *bus_thread(void *ud)
 void mpris_init(void)
 {
     memset(&st, 0, sizeof st);
-    snprintf(st.trackid, sizeof st.trackid, "/mikaplay/track/none");
+    snprintf(st.trackid, sizeof st.trackid, "/marimo/track/none");
     pthread_create(&thr, NULL, bus_thread, NULL);
 }
 
