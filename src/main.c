@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <math.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -2141,65 +2142,137 @@ static int smoke(void)
 
 static int makeicon(const char *out)
 {
-    /* the 88x31 badge look: plum→rust→amber sunset gradient, pale stars,
-     * white unifont ♪ + MIKA, thin gold border */
+    /* a marimo in the dark: round moss ball with a top-light gradient,
+     * mottled texture patches, headphones, dot eyes and a tiny smile.
+     * pixel-buffered so the shading is exact. */
     const int S = 128;
     SDL_Window *win = SDL_CreateWindow("icon", 0, 0, S, S, 0);
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, 0);
     Font f;
     const char *fp;
     SDL_Surface *surf;
-    int rc;
+    int rc = 0;
+    int x, y;
     if (!ren) return 1;
-    fp = find_font();
-    if (!fp || font_load(&f, ren, fp) < 1000) {
-        SDL_DestroyRenderer(ren);
-        SDL_DestroyWindow(win);
-        return 1;
-    }
-    /* gradient */
-    for (int y = 0; y < S; y++) {
+
+    /* soft dark green-black backdrop (vertical gradient) */
+    for (y = 0; y < S; y++) {
         double t = y / (double)(S - 1);
-        int r, g, b;
-        if (t < 0.5) {
-            double u = t * 2;
-            r = (int)(70 + (138 - 70) * u); g = (int)(32 + (59 - 32) * u); b = (int)(74 + (42 - 74) * u);
-        } else {
-            double u = (t - 0.5) * 2;
-            r = (int)(138 + (184 - 138) * u); g = (int)(59 + (138 - 59) * u); b = (int)(42 + (30 - 42) * u);
-        }
+        int r = (int)(18 + (9 - 18) * t);
+        int g = (int)(23 + (11 - 23) * t);
+        int b = (int)(17 + (8 - 17) * t);
         SDL_SetRenderDrawColor(ren, r, g, b, 255);
         SDL_RenderDrawLine(ren, 0, y, S, y);
     }
-    /* stars (seeded — same sky every time) */
-    srand(88);
-    for (int i = 0; i < 48; i++) {
-        int sx = rand() % S, sy = rand() % S;
-        if (sy < 10 || sy > S - 36) continue;   /* keep clear of the text */
-        SDL_SetRenderDrawColor(ren, 232, 221, 208, 255);
-        SDL_Rect st = { sx, sy, 1 + rand() % 2, 1 + rand() % 2 };
-        SDL_RenderFillRect(ren, &st);
-    }
-    /* border */
-    SDL_SetRenderDrawColor(ren, 232, 221, 208, 255);
-    SDL_Rect bd = { 0, 0, S, S };
-    SDL_RenderDrawRect(ren, &bd);
-    /* ♪ */
+
+    /* the ball */
     {
-        int nw = font_char_w(&f, 0x266A);
-        font_draw(&f, (S - nw * 5) / 2, 8, "\xe2\x99\xaa", 5, 255, 255, 255);
+        const double cx = 64, cy = 68, R = 46;
+        for (y = 0; y < S; y++) {
+            for (x = 0; x < S; x++) {
+                double dx = x - cx, dy = y - cy;
+                double d = sqrt(dx * dx + dy * dy);
+                double t;
+                int r, g, b;
+                if (d > R) continue;
+                t = (dy + R) / (2 * R);
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+                r = (int)(126 + (46 - 126) * t);
+                g = (int)(199 + (102 - 199) * t);
+                b = (int)(110 + (52 - 110) * t);
+                /* mottled texture: a few darker patches */
+                {
+                    double ax, ay;
+                    ax = (x - (cx - 20)) / 13.0; ay = (y - (cy + 18)) / 9.0;
+                    if (ax * ax + ay * ay < 1) { r = (int)(r * 0.78); g = (int)(g * 0.78); b = (int)(b * 0.78); }
+                    ax = (x - (cx + 23)) / 15.0; ay = (y - (cy + 26)) / 11.0;
+                    if (ax * ax + ay * ay < 1) { r = (int)(r * 0.70); g = (int)(g * 0.70); b = (int)(b * 0.70); }
+                    ax = (x - (cx - 8)) / 17.0; ay = (y - (cy - 12)) / 8.0;
+                    if (ax * ax + ay * ay < 1) { r = (int)(r * 0.88); g = (int)(g * 0.88); b = (int)(b * 0.88); }
+                }
+                /* top-left sheen */
+                {
+                    double hx = (x - (cx - 17)) / 10.0, hy = (y - (cy - 21)) / 7.0;
+                    if (hx * hx + hy * hy < 1) {
+                        r += (int)((255 - r) * 0.45); g += (int)((255 - g) * 0.45); b += (int)((255 - b) * 0.45);
+                    }
+                }
+                SDL_SetRenderDrawColor(ren, r, g, b, 255);
+                SDL_RenderDrawPoint(ren, x, y);
+            }
+        }
+        /* headphone band: ring arcing over the top */
+        {
+            const double bcx = 64, bcy = 76, BR = 40;
+            const int br = 26, bg = 30, bb = 33;
+            for (y = 0; y < S; y++) {
+                for (x = 0; x < S; x++) {
+                    double dx = x - bcx, dy = y - bcy;
+                    double d = sqrt(dx * dx + dy * dy);
+                    if (y > bcy) continue;                 /* arc only */
+                    if (d > BR - 2.5 && d < BR + 2.5) {
+                        SDL_SetRenderDrawColor(ren, br, bg, bb, 255);
+                        SDL_RenderDrawPoint(ren, x, y);
+                    }
+                }
+            }
+            /* ear cups on the ball's sides */
+            for (int c = 0; c < 2; c++) {
+                int ecx = c ? 106 : 22, ecy = 66, ER = 8;
+                for (y = ecy - ER; y <= ecy + ER; y++) {
+                    for (x = ecx - ER; x <= ecx + ER; x++) {
+                        double dx = x - ecx, dy = y - ecy;
+                        if (dx * dx + dy * dy <= ER * ER) {
+                            SDL_SetRenderDrawColor(ren, br, bg, bb, 255);
+                            SDL_RenderDrawPoint(ren, x, y);
+                        }
+                    }
+                }
+            }
+        }
+        /* face: eyes */
+        for (int e = 0; e < 2; e++) {
+            int ecx = e ? 78 : 50, ecy = 60;
+            for (y = ecy - 2; y <= ecy + 2; y++)
+                for (x = ecx - 2; x <= ecx + 2; x++)
+                    if ((x - ecx) * (x - ecx) + (y - ecy) * (y - ecy) <= 4) {
+                        SDL_SetRenderDrawColor(ren, 8, 11, 8, 255);
+                        SDL_RenderDrawPoint(ren, x, y);
+                    }
+        }
+        /* blush */
+        for (int e = 0; e < 2; e++) {
+            int ecx = e ? 92 : 36, ecy = 71, ER = 5;
+            for (y = ecy - ER; y <= ecy + ER; y++)
+                for (x = ecx - ER; x <= ecx + ER; x++) {
+                    double dx = x - ecx, dy = y - ecy;
+                    if (dx * dx + dy * dy <= ER * ER) {
+                        SDL_SetRenderDrawColor(ren, 224, 142, 141, 255);
+                        SDL_RenderDrawPoint(ren, x, y);
+                    }
+                }
+        }
+        /* smile: little arc */
+        for (double th = 0.15 * 3.14159; th <= 0.85 * 3.14159; th += 0.08) {
+            int sx = (int)(64 + 8.5 * cos(th));
+            int sy = (int)(66 + 8.5 * sin(th));
+            SDL_SetRenderDrawColor(ren, 8, 11, 8, 255);
+            SDL_RenderDrawPoint(ren, sx, sy);
+        }
     }
-    /* MARIMO */
-    {
-        const char *txt = "MARIMO";
-        int tw = font_w(&f, txt, 1);
-        font_draw(&f, (S - tw) / 2, 95, txt, 1, 255, 255, 255);
+
+    /* tiny ♪ up top-right (unifont, keeps the font DNA) */
+    fp = find_font();
+    if (fp && font_load(&f, ren, fp) >= 1000) {
+        font_draw(&f, 100, 10, "\xe2\x99\xaa", 1, 232, 221, 208);
+        font_free(&f);
     }
+
     surf = SDL_CreateRGBSurfaceWithFormat(0, S, S, 32, SDL_PIXELFORMAT_ARGB8888);
     SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, surf->pixels, surf->pitch);
     rc = IMG_SavePNG(surf, out);
     SDL_FreeSurface(surf);
-    font_free(&f);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     return rc == 0 ? 0 : 1;
