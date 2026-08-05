@@ -2398,12 +2398,7 @@ static int makeicon(const char *out)
                     }
                 }
         }
-        /* smile: little arc */
-        for (double th = 0.15 * 3.14159; th <= 0.85 * 3.14159; th += 0.08) {
-            int sx = (int)(64 + 11 * cos(th));
-            int sy = (int)(67 + 11 * sin(th));
-            px[sy * S + sx] = 0xFF000000 | (8u << 16) | (11u << 8) | 8u;
-        }
+        /* smile removed — nova prefers the blank face */
     }
 
     rc = IMG_SavePNG(surf, out);
