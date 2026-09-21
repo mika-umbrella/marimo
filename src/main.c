@@ -1468,7 +1468,10 @@ static void set_volume(int v)
 
 /* one stat per interval on the current library dir; rescan only when the
  * dir's mtime/size changed (new/renamed/deleted albums over CIFS).
- * selection is kept by name so the view doesn't jump around. */
+ * selection is kept by name so the view doesn't jump around, and the scroll
+ * is anchored on the entry the top row was showing — anchoring on the
+ * selection instead snaps the list back up whenever you've been browsing
+ * with the wheel (scrolling never moves the selection). */
 static void poll_refresh(void)
 {
     struct stat st;
@@ -1489,12 +1492,20 @@ static void poll_refresh(void)
     have_last = 1;
 
     {
-        char keep[512];
-        int kind = -1;
+        char keep[512];       /* selected entry, matched by name */
+        char anchor[512];     /* entry the top row was showing */
+        int kind = -1, a_kind = -1, had_anchor = 0;
+        int scroll = A.scroll;
+
         had_sel = A.sel >= 0 && A.sel < A.n_entries;
         if (had_sel) {
             snprintf(keep, sizeof keep, "%s", A.entries[A.sel].name);
             kind = A.entries[A.sel].kind;
+        }
+        if (scroll >= 0 && scroll < A.n_entries) {
+            snprintf(anchor, sizeof anchor, "%s", A.entries[scroll].name);
+            a_kind = A.entries[scroll].kind;
+            had_anchor = 1;
         }
         lib_free_entries(A.entries);
         A.entries = NULL;
@@ -1506,10 +1517,17 @@ static void poll_refresh(void)
                 if (A.entries[i].kind == kind && !strcmp(A.entries[i].name, keep)) { A.sel = i; break; }
         if (A.sel < 0 && A.n_entries > 0) A.sel = 0;
         vis = A.L.list.h / ROW_H;
+        /* hold the view still: the anchor entry's new index becomes the
+         * scroll, so rows added above it shift nothing. only if it vanished
+         * do we fall back to following the selection. */
+        A.scroll = scroll;
+        if (had_anchor) {
+            for (int i = 0; i < A.n_entries; i++)
+                if (A.entries[i].kind == a_kind && !strcmp(A.entries[i].name, anchor)) { A.scroll = i; break; }
+        } else if (A.sel >= 0 && (A.sel < A.scroll || A.sel >= A.scroll + vis))
+            A.scroll = A.sel;
         if (vis > 0 && A.scroll > A.n_entries - vis) A.scroll = A.n_entries - vis;
         if (A.scroll < 0) A.scroll = 0;
-        if (A.sel >= 0 && (A.sel < A.scroll || A.sel >= A.scroll + vis))
-            A.scroll = A.sel;
         set_status("library refreshed");
     }
 }
