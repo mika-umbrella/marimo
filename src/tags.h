@@ -10,5 +10,10 @@
 int tag_read_meta(const char *path, Meta *meta);
 /* just disc/track numbers (for sorting). returns 0 if either was found */
 int tag_trackinfo(const char *path, int *track, int *disc);
+/* the embedded cover picture, FLAC PICTURE or ID3v2 APIC. returns 0 and hands back a
+ * malloc'd buffer (caller frees) when there is one; -1 when there is none.
+ * The player pane gets embedded art from mpv; this is for the library rows, which
+ * have no player instance to ask. */
+int tag_read_art(const char *path, unsigned char **data, size_t *len);
 
 #endif

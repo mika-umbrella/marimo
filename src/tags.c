@@ -271,3 +271,145 @@ int tag_trackinfo(const char *path, int *track, int *disc)
     if (*track <= 0 && *disc <= 0) rc = -1;
     return rc;
 }
+
+/* ---------------- embedded cover art ---------------- */
+
+/* FLAC PICTURE block: picture type, mime, description, then four 4-byte numbers
+ * (width, height, depth, colours), then the image. Prefer the front cover (type 3),
+ * else the first picture in the file. Bounds-checked throughout: this reads files
+ * off the NAS, and a truncated one must not take the app down. */
+static int flac_art(FILE *f, unsigned char **data, size_t *len)
+{
+    unsigned char bh[4], magic[4];
+    unsigned char *first = NULL;
+    size_t first_len = 0;
+    int rc = -1;
+
+    if (fread(magic, 1, 4, f) != 4) return -1;              /* fLaC */
+    for (;;) {
+        int last, type, blen;
+        if (fread(bh, 1, 4, f) != 4) break;
+        last = bh[0] & 0x80;
+        type = bh[0] & 0x7F;
+        blen = get_u24be(bh + 1);
+        if (type == 6 && blen > 32 && blen < (16 << 20)) {
+            unsigned char *buf = (unsigned char *)malloc((size_t)blen);
+            if (!buf) return -1;
+            if (fread(buf, 1, (size_t)blen, f) != (size_t)blen) { free(buf); break; }
+            {
+                int ptype, off = 4, alen;
+                ptype = get_u32be(buf);
+                if (off + 4 > blen) { free(buf); break; }
+                off += 4 + get_u32be(buf + off);            /* mime */
+                if (off + 4 > blen) { free(buf); break; }
+                off += 4 + get_u32be(buf + off);            /* description */
+                off += 16;                                  /* w, h, depth, colours */
+                if (off + 4 > blen) { free(buf); break; }
+                alen = get_u32be(buf + off);
+                off += 4;
+                if (alen > 0 && off + alen <= blen) {
+                    unsigned char *copy = (unsigned char *)malloc((size_t)alen);
+                    if (copy) {
+                        memcpy(copy, buf + off, (size_t)alen);
+                        if (ptype == 3) {                   /* front cover: done */
+                            free(first);
+                            *data = copy;
+                            *len = (size_t)alen;
+                            rc = 0;
+                            free(buf);
+                            return rc;
+                        }
+                        if (first) free(copy);
+                        else { first = copy; first_len = (size_t)alen; }
+                    }
+                }
+            }
+            free(buf);
+        } else {
+            if (fseek(f, blen, SEEK_CUR)) break;
+        }
+        if (last) break;
+    }
+    if (first) { *data = first; *len = first_len; rc = 0; }
+    return rc;
+}
+
+/* ID3v2 APIC (v2.2 calls it PIC): an encoding byte, the mime type (or a bare
+ * 3-character format in 2.2), the picture type, a description, then the image. */
+static int id3_art(FILE *f, unsigned char **data, size_t *len)
+{
+    unsigned char h[10];
+    unsigned char *buf;
+    int ver, size, off = 0;
+    int rc = -1;
+
+    if (fread(h, 1, 10, f) != 10 || memcmp(h, "ID3", 3)) return -1;
+    ver = h[3];
+    size = ((h[6] & 0x7F) << 21) | ((h[7] & 0x7F) << 14) | ((h[8] & 0x7F) << 7) | (h[9] & 0x7F);
+    if (size <= 0 || size > (16 << 20)) return -1;
+    buf = (unsigned char *)malloc((size_t)size);
+    if (!buf) return -1;
+    if (fread(buf, 1, (size_t)size, f) != (size_t)size) { free(buf); return -1; }
+    if ((h[5] & 0x40) && off + 4 <= size) off += 4 + get_u32be(buf + off);
+    while (off + 6 <= size) {
+        int idlen = ver == 2 ? 3 : 4;
+        const char *id = (const char *)buf + off;
+        int fsize;
+        if (id[0] == 0) break;
+        if (off + idlen + 3 > size) break;
+        fsize = ver == 2 ? get_u24be(buf + off + 3) : get_u32be(buf + off + 4);
+        if (ver == 4) fsize &= 0x0FFFFFFF;
+        if (fsize < 0) fsize = 0;
+        if ((idlen == 3 && !memcmp(id, "PIC", 3)) ||
+            (idlen == 4 && !memcmp(id, "APIC", 4))) {
+            unsigned char *p = buf + off + idlen + (ver == 2 ? 3 : 6);
+            int left = fsize, i = 1;
+            if (left > 3) {
+                int enc = p[0];
+                if (ver == 2) i += 3;                       /* 3-char format */
+                else { while (i < left && p[i]) i++; i++; }  /* mime, NUL */
+                i++;                                        /* picture type */
+                if (enc == 1 || enc == 2) {                 /* wide description */
+                    while (i + 1 < left && !(p[i] == 0 && p[i + 1] == 0)) i++;
+                    i += 2;
+                } else {
+                    while (i < left && p[i]) i++;
+                    i++;
+                }
+                if (i > 0 && i < left) {
+                    unsigned char *copy = (unsigned char *)malloc((size_t)(left - i));
+                    if (copy) {
+                        memcpy(copy, p + i, (size_t)(left - i));
+                        *data = copy;
+                        *len = (size_t)(left - i);
+                        rc = 0;
+                    }
+                }
+            }
+            free(buf);
+            return rc;
+        }
+        off += idlen + (ver == 2 ? 3 : 6) + fsize;
+    }
+    free(buf);
+    return rc;
+}
+
+int tag_read_art(const char *path, unsigned char **data, size_t *len)
+{
+    unsigned char magic[4];
+    FILE *f;
+    int rc = -1;
+
+    if (data) *data = NULL;
+    if (len) *len = 0;
+    if (!path || !data || !len) return -1;
+    f = fs_fopen(path, "rb");
+    if (!f) return -1;
+    if (fread(magic, 1, 4, f) != 4) { fclose(f); return -1; }
+    rewind(f);
+    if (!memcmp(magic, "fLaC", 4)) rc = flac_art(f, data, len);
+    else if (!memcmp(magic, "ID3", 3)) rc = id3_art(f, data, len);
+    fclose(f);
+    return rc;
+}
