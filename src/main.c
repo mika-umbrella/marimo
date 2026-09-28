@@ -39,6 +39,7 @@
 #include "mpris.h"
 #include "fs.h"
 #include "history.h"
+#include "recap.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -2042,6 +2043,37 @@ static void load_queue(void)
 
 /* ---------------- test modes ---------------- */
 
+/* Test scaffolding for the recap section: entries shaped exactly like the ones
+ * marimo-android's RecapTest.java builds, so the two implementations can be
+ * checked against the same expectations. */
+static HistoryEntry rtest_entry(long long ts, long long sec, long long dur,
+                                const char *artist, const char *album, const char *title)
+{
+    HistoryEntry e;
+    memset(&e, 0, sizeof e);
+    e.ts = ts;
+    e.sec = sec;
+    e.dur = dur;
+    snprintf(e.artist, sizeof e.artist, "%s", artist ? artist : "");
+    snprintf(e.album, sizeof e.album, "%s", album ? album : "");
+    snprintf(e.title, sizeof e.title, "%s", title ? title : "");
+    return e;
+}
+
+/* local wall-clock timestamp, like Calendar.set(y, mon, day, h, min) */
+static long long rtest_ts(int year, int mon0, int day, int hour, int minute)
+{
+    struct tm tmv;
+    memset(&tmv, 0, sizeof tmv);
+    tmv.tm_year = year - 1900;
+    tmv.tm_mon = mon0;
+    tmv.tm_mday = day;
+    tmv.tm_hour = hour;
+    tmv.tm_min = minute;
+    tmv.tm_isdst = -1;
+    return (long long)mktime(&tmv) * 1000;
+}
+
 static int selftest(const char *cfgfile_global)
 {
     int fails = 0;
@@ -2182,6 +2214,163 @@ static int selftest(const char *cfgfile_global)
         history_shutdown();
         if (ok) printf("diary: ok\n");
         else fails++;
+    }
+
+    /* recap: marimo-android's RecapTest.java reproduced, so the two
+     * implementations have to agree number-for-number */
+    {
+        int ok = 1;
+        HistoryEntry cur[8], prev[4];
+        RecapResult r;
+        char buf[1024];
+        long long w[4];
+        struct tm tmv;
+        size_t nc, np;
+        const long long T = 1700000000000LL;
+
+#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: recap %s\n", msg); ok = 0; } } while (0)
+
+        /* the counts-as-a-play rule */
+        {
+            HistoryEntry a = rtest_entry(0, 20, 300000, "A", "B", "C");
+            HistoryEntry b = rtest_entry(0, 60, 300000, "A", "B", "C");
+            HistoryEntry c = rtest_entry(0, 300, 300000, "A", "B", "C");
+            HistoryEntry d = rtest_entry(0, 170, 300000, "A", "B", "C");
+            HistoryEntry e = rtest_entry(0, 150, 300000, "A", "B", "C");
+            HistoryEntry f = rtest_entry(0, 120, 0, "A", "B", "C");
+            HistoryEntry g = rtest_entry(0, 241, 0, "A", "B", "C");
+            CHECK(!recap_counts_as_play(&a), "20s of 300s is too short");
+            CHECK(!recap_counts_as_play(&b), "60s of 300s is under half");
+            CHECK(recap_counts_as_play(&c), "a full track counts");
+            CHECK(recap_counts_as_play(&d), "170s of 300s is over half");
+            CHECK(recap_counts_as_play(&e), "exactly half counts");
+            CHECK(!recap_counts_as_play(&f), "120s with unknown duration is under 4min");
+            CHECK(recap_counts_as_play(&g), "241s with unknown duration counts");
+        }
+
+        /* totals, distinct counts, ranking */
+        nc = 0;
+        cur[nc++] = rtest_entry(T, 200, 300000, "DJ Sharpnel", "Algo-Logic", "In the Blue");
+        cur[nc++] = rtest_entry(T, 200, 300000, "DJ Sharpnel", "Algo-Logic", "In the Blue");
+        cur[nc++] = rtest_entry(T, 200, 300000, "Utsu-P", "TRAUMATIC", "Love For You");
+        cur[nc++] = rtest_entry(T, 100, 300000, "Utsu-P", "TRAUMATIC", "Love For You");
+        cur[nc++] = rtest_entry(T, 20, 300000, "Halfman", "X", "Skim");
+        cur[nc++] = rtest_entry(T, 250, 300000, "boris", "Amplifier Worship", "Huge");
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        CHECK(r.tracks == 4, "tracks should be 4");
+        CHECK(r.artists == 3, "artists should be 3");
+        CHECK(r.albums == 3, "albums should be 3");
+        CHECK(r.n_top_artists == 3, "three ranked artists");
+        CHECK(r.n_top_artists > 0 && !strcmp(r.top_artists[0].name, "DJ Sharpnel"), "top artist name");
+        CHECK(r.n_top_artists > 0 && r.top_artists[0].count == 2, "top artist count");
+
+        nc = 0;
+        cur[nc++] = rtest_entry(T, 200, 300000, "A", "a1", "t1");
+        cur[nc++] = rtest_entry(T, 200, 300000, "A", "a1", "t2");
+        cur[nc++] = rtest_entry(T, 200, 300000, "B", "b1", "t3");
+        cur[nc++] = rtest_entry(T, 200, 300000, "C", "c1", "t4");
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        CHECK(r.n_top_artists == 3 && !strcmp(r.top_artists[0].name, "A") &&
+              r.top_artists[0].count == 2, "artists rank by play count");
+
+        /* bars: weeks are Monday-first, so Sun is index 6, Wed is 2 */
+        nc = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 5, 12, 0), 200, 300000, "A", "a", "t");  /* Wed  5 Aug */
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 2, 12, 0), 200, 300000, "A", "a", "t");  /* Sun  2 Aug */
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        CHECK(r.n_bars == 7, "a week has 7 bars");
+        CHECK(r.bars[2] == 1, "Wednesday lands in bar 2");
+        CHECK(r.bars[6] == 1, "Sunday lands in bar 6");
+
+        nc = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 2, 15, 12, 0), 200, 300000, "A", "a", "t"); /* March */
+        cur[nc++] = rtest_entry(rtest_ts(2026, 11, 1, 12, 0), 200, 300000, "A", "a", "t"); /* Dec */
+        recap_compute(cur, nc, NULL, 0, RECAP_YEAR, &r);
+        CHECK(r.n_bars == 12, "a year has 12 bars");
+        CHECK(r.bars[2] == 1 && r.bars[11] == 1, "March and December bucketed");
+
+        /* window maths */
+        recap_windows(RECAP_WEEK, rtest_ts(2026, 7, 8, 14, 30), w);   /* Sat 8 Aug 2026 */
+        recap_local_tm(w[0], &tmv);
+        CHECK(tmv.tm_wday == 1, "week window starts on a Monday");
+        recap_local_tm(w[1], &tmv);
+        CHECK(tmv.tm_wday == 1, "week window ends on a Monday");
+        CHECK(w[1] - w[0] == 7LL * 86400 * 1000, "week window is 7 days");
+        CHECK(w[2] == w[0] - 7LL * 86400 * 1000, "previous week starts 7 days earlier");
+
+        recap_windows(RECAP_MONTH, rtest_ts(2026, 7, 15, 0, 0), w);   /* 15 Aug 2026 */
+        recap_local_tm(w[0], &tmv);
+        CHECK(tmv.tm_mon == 6 && tmv.tm_mday == 1, "month window starts 1 July");
+        recap_local_tm(w[1], &tmv);
+        CHECK(tmv.tm_mon == 7 && tmv.tm_mday == 1, "month window ends 1 August");
+        recap_local_tm(w[2], &tmv);
+        CHECK(tmv.tm_mon == 5 && tmv.tm_mday == 1, "previous month window starts in June");
+
+        /* formatting */
+        recap_fmt_hours(42 * 60, 1, buf, sizeof buf);
+        CHECK(!strcmp(buf, "42m"), "fmtHours minutes");
+        recap_fmt_hours(65 * 60, 1, buf, sizeof buf);
+        CHECK(!strcmp(buf, "1h 05m"), "fmtHours hours and minutes");
+        recap_fmt_hours(0, 0, buf, sizeof buf);
+        CHECK(!strcmp(buf, "\xe2\x80\x94"), "fmtHours zero is an em dash");
+        recap_delta(50, 70, "tracks", buf, sizeof buf);
+        CHECK(!strcmp(buf, "\xe2\x96\xb2 +20 tracks"), "delta up");
+        recap_delta(10, 7, "hours", buf, sizeof buf);
+        CHECK(!strcmp(buf, "\xe2\x96\xbc \xe2\x88\x92" "3 hours"), "delta down");
+        recap_delta(5, 5, "x", buf, sizeof buf);
+        CHECK(!strcmp(buf, "\xe2\x80\x94"), "delta flat is an em dash");
+        CHECK(!strcmp(recap_a_an("midnight creature"), "a"), "aAn midnight");
+        CHECK(!strcmp(recap_a_an("evening listener"), "an"), "aAn evening");
+        CHECK(!strcmp(recap_a_an(""), "a"), "aAn empty");
+
+        /* behaviour: persona, streak, skip rate, replay king, discovery */
+        nc = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 6, 30, 22, 0), 200, 300000, "A", "a", "t");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 6, 30, 23, 0), 200, 300000, "B", "b", "t");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 6, 30, 9, 0), 200, 300000, "C", "c", "t");
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        CHECK(!strcmp(r.persona, "evening listener"), "persona takes the dominant bucket");
+
+        nc = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 5, 10, 0), 200, 300000, "A", "a", "t1");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 6, 10, 0), 200, 300000, "B", "b", "t2");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 10, 0), 200, 300000, "C", "c", "t3");
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        CHECK(r.streak_days == 2, "streak counts consecutive days only");
+
+        nc = 0;
+        np = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 12, 0), 200, 300000, "NewArtist", "Loop", "Looping");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 12, 30), 200, 300000, "NewArtist", "Loop", "Looping");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 13, 0), 200, 300000, "OldArtist", "Old", "OldHit");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 13, 30), 45, 300000, "OldArtist", "Old", "Skipped");
+        prev[np++] = rtest_entry(rtest_ts(2026, 6, 25, 12, 0), 200, 300000, "OldArtist", "Old", "OldHit");
+        recap_compute(cur, nc, prev, np, RECAP_WEEK, &r);
+        CHECK(r.tracks == 3, "three qualified plays");
+        CHECK(!strcmp(r.replay_king, "Looping") && r.replay_king_plays == 2, "replay king");
+        CHECK(r.skip_rate == 25, "skip rate should be 25%");
+        CHECK(r.discovery_pct == 66, "discovery should be 66%");
+        CHECK(r.longest_session_sec == 600, "longest session sums the sitting");
+
+        /* the share card */
+        nc = 0;
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 12, 0), 200, 300000, "A", "a", "Loop Hit");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 12, 5), 200, 300000, "A", "a", "Loop Hit");
+        cur[nc++] = rtest_entry(rtest_ts(2026, 7, 1, 12, 10), 200, 300000, "A", "a", "Loop Hit");
+        recap_compute(cur, nc, NULL, 0, RECAP_WEEK, &r);
+        w[0] = rtest_ts(2026, 7, 1, 12, 0) - 86400000LL;
+        w[1] = rtest_ts(2026, 7, 1, 12, 0);
+        recap_share_card(RECAP_WEEK, w, &r, buf, sizeof buf);
+        CHECK(!strncmp(buf, "my week in marimo", 17), "card says my week in marimo");
+        CHECK(!strstr(buf, "your week"), "card is mine, not yours");
+        CHECK(strstr(buf, "3 tracks") != NULL, "card has the track count");
+        CHECK(strstr(buf, "looped \"Loop Hit\" \xc3\x97" "3") != NULL, "card has the loop line");
+        CHECK(strstr(buf, "% new artists") != NULL, "card has discovery");
+        CHECK(strchr(buf, '\n') != NULL, "card is multi-line");
+
+        if (ok) printf("recap: ok\n");
+        else fails++;
+#undef CHECK
     }
 
     /* queue logic */
