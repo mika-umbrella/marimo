@@ -43,6 +43,7 @@
 #include "recap.h"
 #include "waveform.h"
 #include "theme.h"
+#include "bg.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -136,6 +137,7 @@ typedef struct {
      * sampling happens once per album, not per frame */
     Palette pal;
     char art_dir[Q_PATH_MAX];
+    int shot_mode;          /* captures freeze the drift so they are reproducible */
     /* modal */
     int modal, m_focus;
     char m_fields[4][512];
@@ -1343,15 +1345,26 @@ static void draw_modal(void)
               C_DIM, 1);
 }
 
+/* Seconds for the drift. Frozen in capture mode: the noise would otherwise make
+ * every screenshot a different frame, for no benefit at all. */
+static double bg_time(void)
+{
+    if (A.shot_mode) return 0.0;
+    return (double)SDL_GetTicks64() / 1000.0;
+}
+
 static void render(void)
 {
     A.tip = 0;
     {
-        /* the backdrop wears the cover's colours, as on the phone; the panels and
-         * the accent stay fixed so text survives a bright album cover */
+        /* the backdrop wears the cover's colours, as on the phone, and drifts;
+         * the panels and the accent stay fixed so text survives bright art. The
+         * flat scrim is what shows for the first frame, before any noise exists. */
         SDL_Color bg = palette_scrim(&A.pal, 1);
         SDL_SetRenderDrawColor(A.ren, bg.r, bg.g, bg.b, 255);
         SDL_RenderClear(A.ren);
+        bg_frame(A.ren, &A.pal, 1, bg_time(), A.w, A.h);
+        bg_draw(A.ren, A.w, A.h);
     }
     draw_header();
     draw_playerbar();
@@ -3093,6 +3106,95 @@ static int selftest(const char *cfgfile_global)
         }
     }
 
+    /* background: the noise field. The check that earns its keep is periodicity —
+     * the drift must wrap at the field's real period, and wrapping at 1.0 instead
+     * is precisely the ~15s jump the phone had (found there with a screen
+     * recording; here it costs one comparison). The two hashes are printed so the
+     * phone's own arithmetic can be checked against this one: the grid is built
+     * from java.util.Random seeded 0xC0FFEE, so a faithful Java run of
+     * BgManager's inner loops must produce identical numbers. */
+    {
+        int w, h, gw = 0, gh = 0, ok = 1;
+        size_t n, i;
+        float *snap;
+        const float *f;
+        Uint32 *px;
+        uint64_t fh = 1469598103934665603ull, ph = 1469598103934665603ull;
+        Palette demo;
+
+        /* a fixed palette so the hash is comparable across runs and languages */
+        demo.light = (SDL_Color){ 0xF8, 0x9B, 0x2C, 255 };
+        demo.mid   = (SDL_Color){ 0xD2, 0x5A, 0x1C, 255 };
+        demo.dark  = (SDL_Color){ 0x81, 0x34, 0x27, 255 };
+        demo.from_art = 1;
+
+        bg_size_for(480, 640, &w, &h);
+        n = (size_t)w * h;
+        snap = malloc(n * sizeof(float));
+        px = malloc(n * sizeof(Uint32));
+        if (!snap || !px) {
+            printf("FAIL: bg test buffers\n");
+            fails++;
+        } else {
+            bg_field(w, h, 0.0, 0.0);
+            f = bg_field_data(&w, &h);
+            bg_grid_data(&gw, &gh);
+            memcpy(snap, f, n * sizeof(float));
+            for (i = 0; i < n; i++) {
+                if (!(snap[i] >= -1.5f && snap[i] <= 1.5f)) { ok = 0; break; }
+                {   /* FNV-1a over the float bits, as the Java side can reproduce */
+                    Uint32 bits;
+                    int k;
+                    memcpy(&bits, &snap[i], 4);
+                    for (k = 0; k < 4; k++) {
+                        fh ^= (bits >> (8 * k)) & 0xFF;
+                        fh *= 1099511628211ull;
+                    }
+                }
+            }
+            if (!ok) { printf("FAIL: bg field out of range\n"); fails++; }
+
+            /* one full period in time must land on the identical pattern */
+            bg_field(w, h, BG_DX * (1.0 / BG_DX), 0.0);
+            if (memcmp(snap, bg_field_data(&w, &h), n * sizeof(float)) != 0) {
+                printf("FAIL: bg drift does not wrap at the field's real period\n");
+                fails++;
+            }
+            /* ...and half a period must NOT, or it is not moving at all */
+            bg_field(w, h, BG_DX * (0.5 / BG_DX), 0.0);
+            if (memcmp(snap, bg_field_data(&w, &h), n * sizeof(float)) == 0) {
+                printf("FAIL: bg drift is static\n");
+                fails++;
+            }
+
+            bg_render_px(&demo, 1, 0.0, px, w, h);
+            for (i = 0; i < n; i++) {
+                int k;
+                for (k = 0; k < 4; k++) {
+                    ph ^= (px[i] >> (8 * k)) & 0xFF;
+                    ph *= 1099511628211ull;
+                }
+            }
+            {   /* the budget is 20 of these a second; this is what one takes here */
+                Uint64 t0, dt;
+                int reps = 20, r;
+                t0 = SDL_GetTicks64();
+                for (r = 0; r < reps; r++)
+                    bg_render_px(&demo, 1, (double)r * 0.05, px, w, h);
+                dt = SDL_GetTicks64() - t0;
+                printf("bg: %d updates of %dx%d in %llu ms (%.2f ms each)\n",
+                       reps, w, h, (unsigned long long)dt, (double)dt / reps);
+            }
+            if (ok) {
+                printf("bg: field %dx%d grid %dx%d wraps at period and moves\n", w, h, gw, gh);
+                printf("bg: field hash %016llx pixels(0xC0FFEE palette) %016llx\n",
+                       (unsigned long long)fh, (unsigned long long)ph);
+            }
+        }
+        free(snap);
+        free(px);
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3663,6 +3765,7 @@ int main(int argc, char **argv)
     A.running = 1;
 
     if (do_smoke) return smoke();
+    A.shot_mode = shot_path != NULL;
     if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
