@@ -48,18 +48,48 @@ static Row *row_add(const char *dir)
     return &rows[n_rows++];
 }
 
-static int count_audio(const char *dir)
+/* Audio files in `dir`, or -1 if it cannot be opened.
+ *
+ * One level deep, but only when the folder has no audio of its own: three albums
+ * here keep their tracks in disc subfolders (Disc 1 / Disc 2, TRAIL [Disc 1 2009] /
+ * TRAIL [Disc 2 2010], and three folders named after the album), and the names are
+ * too varied to match on. Position is the reliable rule: if a folder holds no audio
+ * but its subfolders do, that folder IS the album. Never deeper than one level. */
+static int count_audio_at(const char *dir, int descend)
 {
     DIR *d = opendir(dir);
     struct dirent *de;
     int n = 0;
+
     if (!d) return -1;
     while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
         if (lib_is_audio(de->d_name)) n++;
     }
+    if (n > 0 || !descend) {
+        closedir(d);
+        return n;
+    }
+    /* nothing of its own: ask the immediate subfolders, and only them */
+    rewinddir(d);
+    while ((de = readdir(d)) != NULL) {
+        char sub[1024];
+        struct stat st;
+        if (de->d_name[0] == '.') continue;
+        snprintf(sub, sizeof sub, "%s/%s", dir, de->d_name);
+        if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        {
+            int m = count_audio_at(sub, 0);
+            if (m > 0) n += m;
+        }
+    }
     closedir(d);
     return n;
+}
+
+static int count_audio(const char *dir)
+{
+    return count_audio_at(dir, 1);
 }
 
 int libcache_tracks(const char *dir)
@@ -193,6 +223,14 @@ void libcache_load(void)
     if (!cache_file(path, sizeof path)) return;
     f = fopen(path, "r");
     if (!f) return;
+    /* The file carries the version of the counting rule that produced it, and a
+     * mismatch throws the whole thing away. Without this, changing the rule is
+     * invisible: the counts key on each folder's mtime, the folders did not change,
+     * so every stale count gets reused — exactly what happened when the disc-folder
+     * rule landed and the totals stayed at the old numbers until the file was
+     * deleted by hand. Bump the version whenever the rule changes. */
+    if (!fgets(line, sizeof line, f)) { fclose(f); return; }
+    if (strncmp(line, "# marimo library cache v2", 25) != 0) { fclose(f); return; }
     while (fgets(line, sizeof line, f)) {
         char *t1, *t2;
         Row *r;
@@ -226,7 +264,7 @@ void libcache_save(void)
     if (!cache_file(path, sizeof path)) return;
     f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# marimo library cache — album mtime, track count, folder\n");
+    fprintf(f, "# marimo library cache v2 - album mtime, track count, folder\n");
     for (i = 0; i < n_rows; i++) {
         if (rows[i].tracks < 0) continue;
         fprintf(f, "%lld\t%d\t%s\n", rows[i].mtime, rows[i].tracks, rows[i].dir);
