@@ -133,6 +133,21 @@ static int bracket_is_year(const char *open, const char *close)
     return first_year_in(content, 0) != 0;
 }
 
+/* Does this bracket group name a disc or volume, rather than a format? "[FLAC]"
+ * and "[MP3 320]" describe the file and the row shows them elsewhere; "[Disc 1
+ * 2009]" names which disc this is and has to stay in the title. */
+static int bracket_is_disc(const char *open, const char *close)
+{
+    char content[256];
+    size_t len = (size_t)(close - open - 1), i;
+    if (len >= sizeof content) return 0;
+    memcpy(content, open + 1, len);
+    content[len] = 0;
+    for (i = 0; content[i]; i++) content[i] = (char)tolower((unsigned char)content[i]);
+    return strstr(content, "disc") || strstr(content, "disk") || strstr(content, "vol")
+           ? 1 : 0;
+}
+
 /* Where the artist/title separator sits, or NULL. Any dash character counts —
  * ascii '-', the en and em dashes, the horizontal bar, the minus sign — as long as
  * it has a space on either side; how many spaces follow does not matter.
@@ -197,7 +212,16 @@ void album_split(const char *folder, char *artist, size_t asz,
             const char *end = strchr(work + i + 1, close);
             if (end) {
                 if (bracket_is_year(work + i, end)) { i = (size_t)(end - work); continue; }
-                if (work[i] == '[') { i = (size_t)(end - work); continue; }  /* [FLAC] etc */
+                /* A disc/volume marker is part of the name, not a format tag. Both
+                 * discs of TRAIL are named "TRAIL [Disc N YYYY]", so stripping the
+                 * group as if it were [FLAC] gave two rows both called "TRAIL" —
+                 * the year survived the bare pass, the disc marker did not. The
+                 * files' own album tag reads "TRAIL [Disc 1 2009]", so keeping the
+                 * group is also what the tags say. */
+                if (work[i] == '[' && !bracket_is_disc(work + i, end)) {
+                    i = (size_t)(end - work);
+                    continue;  /* [FLAC] etc */
+                }
             }
         }
         out[o++] = work[i];
@@ -487,11 +511,12 @@ static struct {
     char title[256];
     char artist[256];
     int secs;
+    int track, disc;       /* shown as the row's number, queue style */
 } tagcache[TAG_CACHE];
 static int tagcache_next;
 
 int album_track_tags(const char *path, char *title, size_t tn, char *artist, size_t an,
-                     int *secs)
+                     int *secs, int *track, int *disc)
 {
     Meta m;
     int i;
@@ -499,6 +524,8 @@ int album_track_tags(const char *path, char *title, size_t tn, char *artist, siz
     if (title && tn) title[0] = 0;
     if (artist && an) artist[0] = 0;
     if (secs) *secs = 0;
+    if (track) *track = 0;
+    if (disc) *disc = 0;
     if (!path || !*path) return 0;
 
     for (i = 0; i < TAG_CACHE; i++) {
@@ -507,6 +534,8 @@ int album_track_tags(const char *path, char *title, size_t tn, char *artist, siz
             if (title) snprintf(title, tn, "%s", tagcache[i].title);
             if (artist) snprintf(artist, an, "%s", tagcache[i].artist);
             if (secs) *secs = tagcache[i].secs;
+            if (track) *track = tagcache[i].track;
+            if (disc) *disc = tagcache[i].disc;
             return 1;
         }
     }
@@ -523,10 +552,14 @@ int album_track_tags(const char *path, char *title, size_t tn, char *artist, siz
         snprintf(tagcache[i].title, sizeof tagcache[i].title, "%.240s", ok ? m.title : "");
         snprintf(tagcache[i].artist, sizeof tagcache[i].artist, "%.240s", ok ? m.artist : "");
         tagcache[i].secs = (ok && m.duration_ms > 0) ? (int)(m.duration_ms / 1000) : 0;
+        tagcache[i].track = (ok && m.track > 0) ? m.track : 0;
+        tagcache[i].disc = (ok && m.disc > 0) ? m.disc : 0;
         if (!ok) return 0;
         if (title) snprintf(title, tn, "%s", tagcache[i].title);
         if (artist) snprintf(artist, an, "%s", tagcache[i].artist);
         if (secs) *secs = tagcache[i].secs;
+        if (track) *track = tagcache[i].track;
+        if (disc) *disc = tagcache[i].disc;
         return 1;
     }
 }

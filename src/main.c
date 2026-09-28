@@ -949,6 +949,7 @@ static void draw_list_rows(int tab)
             int tracks = e->kind == L_DIR ? album_tracks(e->path) : -1;
             char right[256] = "";
             char shown[600] = "", tipfull[600] = "";
+            char num[24] = "";      /* disc.track, the way the queue shows it */
             SDL_Texture *thumb = NULL;
 
             if (tracks > 0) {
@@ -974,11 +975,16 @@ static void draw_list_rows(int tab)
                 /* a track reads as its tagged title and a duration, the way the
                  * phone's rows do, rather than a filename and a byte count */
                 char title[256], artist[256];
-                int secs = 0;
-                if (album_track_tags(e->path, title, sizeof title, artist, sizeof artist, &secs)) {
+                int secs = 0, trk = 0, dsc = 0;
+                if (album_track_tags(e->path, title, sizeof title, artist, sizeof artist, &secs,
+                                     &trk, &dsc)) {
                     album_dashes(title[0] ? title : e->name, shown, sizeof shown);
                     snprintf(tipfull, sizeof tipfull, "%s", shown);
                     if (secs > 0) snprintf(right, sizeof right, "%d:%02d", secs / 60, secs % 60);
+                    /* the track's number, in the queue's own form: disc.track when
+                     * there is a disc, otherwise the track on its own */
+                    if (dsc > 0)      snprintf(num, sizeof num, "%d.%d", dsc, trk);
+                    else if (trk > 0) snprintf(num, sizeof num, "%d", trk);
                 } else {
                     snprintf(shown, sizeof shown, "%s", e->name);
                     snprintf(tipfull, sizeof tipfull, "%s", e->name);
@@ -1001,13 +1007,21 @@ static void draw_list_rows(int tab)
             {
                 char disp[600];
                 int rw = right[0] ? font_w(&A.font, right, 1) + 12 : 12;
-                int avail = row.w - 26 - rw;
-                int trunc = fit_text(shown, avail, disp, sizeof disp);
+                int nx = row.x + 24;
+                int avail, trunc;
+                /* a track row carries its number, in the queue's column and colour,
+                 * so a folder listing and the queue read the same way */
+                if (num[0]) {
+                    draw_text(nx, y + 2, num, C_DIM, 1);
+                    nx += font_w(&A.font, num, 1) + 8;
+                }
+                avail = row.w - 26 - rw - (nx - (row.x + 24));
+                trunc = fit_text(shown, avail, disp, sizeof disp);
                 /* an album's own name is body text, not a folder colour: the phone
                  * keeps the bright name and dims only the artist/year line */
                 SDL_Color c = idx == sel ? C_ACC
                             : e->kind == L_DIR ? (tracks > 0 ? C_TXT : C_AMBER) : C_TXT;
-                draw_text(row.x + 24, y + 2, disp, c, 1);
+                draw_text(nx, y + 2, disp, c, 1);
                 if (hover && trunc) {
                     snprintf(A.tip_buf, sizeof A.tip_buf, "%s", tipfull);
                     A.tip = 1;
@@ -1856,79 +1870,114 @@ static void queue_play_file(const char *path, const char *name, long long size, 
     spawn_meta();
 }
 
-typedef struct { int pos, has, track, disc; } TagSort;
+/* One track of an album, wherever the album keeps it. A folder with audio of its
+ * own is the ordinary case; a disc set has none of its own and keeps it in disc
+ * subfolders, so those files are gathered into this one list too. */
+typedef struct {
+    const char *path;      /* the directory holding the file */
+    const char *name;
+    long long size;
+    int track, disc;       /* 0 when the file carries no tag */
+} AddRef;
 
-static int tagsort_cmp(const void *a, const void *b)
+/* Disc, then track, then the folder, then the file name.
+ *
+ * The tags decide, so a set plays disc 1 through and then disc 2 even when the
+ * folders are named for volumes rather than numbers. The folder comes before the
+ * file name because the file names repeat across discs ("01. …" on both), so for
+ * a set with no disc tags the old folder order still holds instead of the two
+ * discs interleaving 01, 01, 02, 02. Untagged files sort last within their disc
+ * (track 10000), which is what the previous single-folder sort did. */
+static int addref_cmp(const void *a, const void *b)
 {
-    const TagSort *x = (const TagSort *)a, *y = (const TagSort *)b;
-    if (x->has != y->has) return y->has - x->has;
-    if (x->has) {
-        int xd = x->disc > 0 ? x->disc : 1, yd = y->disc > 0 ? y->disc : 1;
-        if (xd != yd) return xd - yd;
-        int xt = x->track > 0 ? x->track : 10000, yt = y->track > 0 ? y->track : 10000;
-        if (xt != yt) return xt - yt;
+    const AddRef *x = (const AddRef *)a, *y = (const AddRef *)b;
+    int xd = x->disc > 0 ? x->disc : 1, yd = y->disc > 0 ? y->disc : 1;
+    int xt = x->track > 0 ? x->track : 10000, yt = y->track > 0 ? y->track : 10000;
+    int c;
+    if (xd != yd) return xd < yd ? -1 : 1;
+    if (xt != yt) return xt < yt ? -1 : 1;
+    c = strcasecmp(x->path, y->path);
+    if (c) return c;
+    return strcasecmp(x->name, y->name);
+}
+
+static void addref_push(AddRef **v, int *nv, int *cap,
+                        const char *path, const char *name, long long size)
+{
+    AddRef *r;
+    if (*nv == *cap) {
+        *cap = *cap ? *cap * 2 : 32;
+        *v = (AddRef *)realloc(*v, (size_t)*cap * sizeof **v);
     }
-    return x->pos - y->pos;
+    r = &(*v)[*nv];
+    r->path = strdup(path);
+    r->name = strdup(name);
+    r->size = size;
+    r->track = 0;
+    r->disc = 0;
+    if (tag_trackinfo(path, &r->track, &r->disc) != 0) { r->track = 0; r->disc = 0; }
+    (*nv)++;
+}
+
+/* Every track of one album, in the order the queue should hold it. Caller frees
+ * with addref_free. */
+static AddRef *album_gather(const char *dir, int *count)
+{
+    LibEntry *e = NULL;
+    int n = lib_scan(dir, &e), nv = 0, cap = 0, own = 0, i, j;
+    AddRef *v = NULL;
+
+    for (i = 0; i < n; i++) if (e[i].kind == L_FILE) own++;
+    if (own) {
+        for (i = 0; i < n; i++)
+            if (e[i].kind == L_FILE)
+                addref_push(&v, &nv, &cap, e[i].path, e[i].name, e[i].size);
+    } else {
+        /* no audio of its own: a disc set, so descend one level */
+        for (i = 0; i < n; i++) {
+            LibEntry *sub = NULL;
+            int ns;
+            if (e[i].kind != L_DIR || !strcmp(e[i].name, "..")) continue;
+            ns = lib_scan(e[i].path, &sub);
+            for (j = 0; j < ns; j++)
+                if (sub[j].kind == L_FILE)
+                    addref_push(&v, &nv, &cap, sub[j].path, sub[j].name, sub[j].size);
+            lib_free_entries(sub);
+        }
+    }
+    lib_free_entries(e);
+    if (nv > 1) qsort(v, (size_t)nv, sizeof *v, addref_cmp);
+    *count = nv;
+    return v;
+}
+
+static void addref_free(AddRef *v, int n)
+{
+    int i;
+    if (!v) return;
+    for (i = 0; i < n; i++) { free((void *)v[i].path); free((void *)v[i].name); }
+    free(v);
 }
 
 static void play_dir(const char *path, int replace)
 {
-    LibEntry *e = NULL;
-    int n = lib_scan(path, &e);
-    int nfiles = 0, tagged = 0, added = 0, first = -1;
-    TagSort *ts = NULL;
-    for (int i = 0; i < n; i++) if (e[i].kind == L_FILE) nfiles++;
-    if (nfiles == 0) {
-        /* Not necessarily empty. Three albums here keep their tracks in disc
-         * subfolders — Disc 1 / Disc 2, TRAIL [Disc 1 2009] / TRAIL [Disc 2 2010],
-         * and folders named after the album itself — and the names are too varied
-         * to match on, so position is the rule.
-         *
-         * lib_scan orders directories by name, so adding each subfolder in turn
-         * gives Disc 1 before Disc 2, and recursing into this same function keeps
-         * each disc's own track order (and its tag sorting) for free. Only the
-         * first subfolder inherits `replace`, so the queue is cleared once. */
-        int subs = 0;
-        for (int i = 0; i < n; i++) {
-            if (e[i].kind != L_DIR) continue;
-            if (!strcmp(e[i].name, "..")) continue;
-            play_dir(e[i].path, subs == 0 ? replace : 0);
-            subs++;
-        }
-        lib_free_entries(e);
-        if (subs == 0) set_status("no audio files in that folder");
+    AddRef *v;
+    int nv = 0, added = 0, first = -1, k;
+
+    v = album_gather(path, &nv);
+    if (nv == 0) {
+        set_status("no audio files in that folder");
         return;
     }
-    ts = (TagSort *)calloc(nfiles, sizeof(TagSort));
-    {
-        int ti = 0;
-        for (int i = 0; i < n; i++) {
-            if (e[i].kind == L_FILE) {
-                ts[ti].pos = i;
-                int tr = -1, dc = -1;
-                if (tag_trackinfo(e[i].path, &tr, &dc) == 0 && (tr > 0 || dc > 0)) {
-                    ts[ti].has = 1;
-                    ts[ti].track = tr;
-                    ts[ti].disc = dc;
-                    tagged++;
-                }
-                ti++;
-            }
-        }
-    }
-    /* sort by disc/track tags when we have them, else keep filename order */
-    if (tagged >= 2) qsort(ts, nfiles, sizeof(TagSort), tagsort_cmp);
     q_lock(&A.q);
     if (replace) q_clear(&A.q);
-    for (int k = 0; k < nfiles; k++) {
-        LibEntry *fe = &e[ts[k].pos];
-        int idx = q_add(&A.q, fe->path, fe->name, fe->size);
+    for (k = 0; k < nv; k++) {
+        int idx = q_add(&A.q, v[k].path, v[k].name, v[k].size);
         if (first < 0) first = idx;
         added++;
     }
     q_unlock(&A.q);
-    free(ts);
-    lib_free_entries(e);
+    addref_free(v, nv);
     if (replace || A.q.cur < 0)
         play_index(first);
     else
@@ -3582,6 +3631,9 @@ static int selftest(const char *cfgfile_global)
      * shape from Nova's library. */
     {
         static const struct { const char *folder; int year; } yc[] = {
+            /* the year inside a disc bracket still wins: the row shows 2009 while
+             * the title keeps "[Disc 1 2009]" */
+            { "TRAIL [Disc 1 2009]", 2009 },
             { "0TS - MACHINA MORI [2026.01.01]",                   2026 },
             { "171 - 2020 - 飽き性",                                 2020 },
             { "23.exe - (2020) WALK [FLAC] {2025 13433-8873443}",   2020 },
@@ -3608,6 +3660,13 @@ static int selftest(const char *cfgfile_global)
         {
             static const struct { const char *folder, *artist, *title; } sc[] = {
                 { "0TS - (2025) MACHINA MORI [FLAC]", "0TS", "MACHINA MORI" },
+                /* a disc marker stays in the title. Both discs of TRAIL are named
+                 * "TRAIL [Disc N YYYY]", and stripping the group like a [FORMAT]
+                 * left two rows both reading "TRAIL" with no way to tell which disc
+                 * it was. The format tag on the album above is still stripped. */
+                { "TRAIL [Disc 1 2009]", "", "TRAIL [Disc 1 2009]" },
+                { "minimum electric design - (2012) TRAIL [FLAC]",
+                  "minimum electric design", "TRAIL" },
                 { "36g - 劣性e.p (1999, 2008)",        "36g", "劣性e.p" },
                 { "？ (2023) [OPUS]",                   "",    "？" },
                 { "385 - example album",              "385", "example album" },
@@ -3879,6 +3938,48 @@ static int selftest(const char *cfgfile_global)
         if (q_next(&q) < 0 || q_next(&q) >= 4) { printf("FAIL: shuffle range\n"); fails++; }
         q_free(&q);
         printf("queue: %s\n", fails ? "FAIL" : "ok");
+    }
+
+    /* disc sets: the order comes from the disc and track tags, not from the folder
+     * names. TRAIL's discs are "TRAIL [Disc 1 2009]" and "TRAIL [Disc 2 2010]" and
+     * the file names repeat across them, so folder order alone would interleave the
+     * two discs. This is the check that a click cannot give: the gather and sort
+     * run without a queue involvement, so the order is provable headlessly. */
+    {
+        int n = 0, ok = 1;
+        AddRef *v = album_gather("/home/nova/Music/minimum electric design - (2012) TRAIL [FLAC]", &n);
+        if (n != 30) {
+            printf("FAIL: disc album gathered %d tracks, want 30\n", n);
+            ok = 0;
+        } else {
+            if (v[0].disc != 1 || v[0].track != 1 || strncmp(v[0].name, "01.", 3)) {
+                printf("FAIL: disc order head = disc %d track %d \"%s\", want disc 1 track 1\n",
+                       v[0].disc, v[0].track, v[0].name);
+                ok = 0;
+            }
+            if (v[n - 1].disc != 2 || v[n - 1].track != 14) {
+                printf("FAIL: disc order tail = disc %d track %d, want disc 2 track 14\n",
+                       v[n - 1].disc, v[n - 1].track);
+                ok = 0;
+            }
+            /* and the two discs must not interleave: disc 2 starts after disc 1 ends */
+            if (ok) {
+                int i, last1 = -1, first2 = -1;
+                for (i = 0; i < n; i++) {
+                    if (v[i].disc == 1) last1 = i;
+                    if (v[i].disc == 2 && first2 < 0) first2 = i;
+                }
+                if (last1 >= 0 && first2 >= 0 && first2 < last1) {
+                    printf("FAIL: disc 1 and disc 2 interleave (last disc 1 = %d, first disc 2 = %d)\n",
+                           last1, first2);
+                    ok = 0;
+                }
+                printf("disc order: %d tracks, disc 1 #%d … disc 2 #%d\n",
+                       n, v[0].track, v[n - 1].track);
+            }
+        }
+        addref_free(v, n);
+        if (!ok) fails++;
     }
 
     /* queue moves: the current track must stay the current track. That is the

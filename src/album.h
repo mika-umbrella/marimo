@@ -43,7 +43,7 @@ void album_thumb_stats(int *decoded, int *cached);
  * back to the filename. Reading is the fast FLAC/MP3 path, and it happens once per
  * file — the library rows ask for every visible file every frame. */
 int album_track_tags(const char *path, char *title, size_t tn, char *artist, size_t an,
-                     int *secs);
+                     int *secs, int *track, int *disc);
 
 /* Display form of a folder or track name: the em/en dashes her folders mix in
  * become plain hyphens. Display only — the name on disk is left exactly alone,
