@@ -393,6 +393,20 @@ static SDL_Texture *load_tex_file(const char *path)
     return t;
 }
 
+/* An image already in memory (a tag's embedded picture). `data` is borrowed. */
+static SDL_Texture *load_tex_mem(const void *data, size_t len)
+{
+    SDL_RWops *rw = SDL_RWFromConstMem(data, (int)len);
+    SDL_Surface *s;
+    SDL_Texture *t;
+    if (!rw) return NULL;
+    s = IMG_Load_RW(rw, 1);
+    if (!s) return NULL;
+    t = SDL_CreateTextureFromSurface(A.ren, s);
+    SDL_FreeSurface(s);
+    return t;
+}
+
 static SDL_Texture *load_tex_b64(const char *b64)
 {
     int len;
@@ -1703,6 +1717,22 @@ static void load_art(void)
     if (lib_find_cover(dir, cov, sizeof cov) == 0) {
         A.art = load_tex_file(cov);
         if (A.art) return;
+    }
+    /* Embedded art, read off the track ourselves. mpv cannot supply it: the player
+     * runs with audio-display=no, this mpv (0.41) has no album-art property at all,
+     * and metadata/by-key/cover is long gone — so the calls below always came back
+     * empty and a tag-only album showed the note glyph here while its row showed the
+     * cover. This is the same two sources the rows and the palette use. */
+    {
+        char track[4096];
+        unsigned char *art = NULL;
+        size_t len = 0;
+        if (album_first_audio(dir, track, sizeof track) &&
+            tag_read_art(track, &art, &len) == 0) {
+            if (art && len) A.art = load_tex_mem(art, len);
+            free(art);
+            if (A.art) return;
+        }
     }
     char *b64 = player_embedded_art(A.pl);
     if (b64) {
