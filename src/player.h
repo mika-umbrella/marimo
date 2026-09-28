@@ -24,6 +24,11 @@ int  player_play_with_next(Player *p, const char *path, const char *next_path);
  * the new following entry */
 void player_gapless_shift(Player *p, const char *next_path);
 int  player_playlist_count(Player *p);
+/* Replace the preloaded next entry (NULL just drops the stale one). This is what
+ * the queue gestures get instead of a mirrored playlist: mpv here holds only the
+ * current track plus the next one, so a reorder or a removal is reconciled by
+ * telling mpv what plays next, not by replaying the edit into it. */
+void player_set_next(Player *p, const char *path);
 void player_dbg_playlist(Player *p);
 void player_set_pause(Player *p, int paused);
 int  player_paused(Player *p);

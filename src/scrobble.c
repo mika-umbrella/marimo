@@ -41,6 +41,24 @@ static char auth_msg[256] = "";
 
 /* ---------------- helpers ---------------- */
 
+/* On Windows, OpenSSL-backed libcurl has no default CA bundle. Resolve
+ * cacert.pem relative to the EXE directory so HTTPS actually verifies. */
+static void win_cacert_path(char *buf, size_t bufsz)
+{
+#ifdef _WIN32
+    char path[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
+    char *slash;
+    if (n == 0 || n >= sizeof path) { buf[0] = 0; return; }
+    slash = strrchr(path, '\\');
+    if (slash) *slash = 0;
+    snprintf(buf, bufsz, "%s\\cacert.pem", path);
+#else
+    (void)buf; (void)bufsz;
+    buf[0] = 0;
+#endif
+}
+
 static void set_msg(const char *fmt, const char *a)
 {
     snprintf(auth_msg, sizeof auth_msg, fmt, a);
@@ -64,8 +82,12 @@ static int http_post(const char *url, const char *body, const char *auth_hdr, Bu
     CURL *c = curl_easy_init();
     struct curl_slist *hdrs = NULL;
     CURLcode res;
+    char cacert[512];
     if (!c) return -1;
     memset(out, 0, sizeof(*out));
+    win_cacert_path(cacert, sizeof cacert);
+    if (cacert[0])
+        curl_easy_setopt(c, CURLOPT_CAINFO, cacert);
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);

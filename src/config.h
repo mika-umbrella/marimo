@@ -11,6 +11,7 @@ typedef struct {
     int  shuffle;
     int  repeat;   /* 0 off, 1 all, 2 one */
     int  refresh;  /* library auto-refresh interval in seconds, 0 = off */
+    int  dark;     /* theme: 1 dark (the original look), 0 light — the phone's "dark" pref */
     char lf_key[512];
     char lf_secret[512];
     char lf_session[128];

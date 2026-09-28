@@ -6,6 +6,7 @@
 
 #include <SDL.h>
 #include "icons.h"
+#include "icons20.h"
 
 typedef struct {
     int cp;
@@ -22,6 +23,7 @@ typedef struct {
     SDL_Texture **tt;
     int tcap;
     SDL_Texture *icon_tex[N_ICONS];
+    SDL_Texture *icon20_tex[N_ICONS20];
 } Font;
 
 /* returns number of glyphs loaded, or -1 if the file can't be opened */
@@ -40,5 +42,7 @@ int  font_has(Font *f, int cp);
 /* icons */
 SDL_Texture *font_icon_tex(Font *f, int idx);
 void font_draw_icon(Font *f, int x, int y, int idx, int scale, Uint8 r, Uint8 g, Uint8 b);
+SDL_Texture *font_icon20_tex(Font *f, int idx);
+void font_draw_icon20(Font *f, int x, int y, int idx, int scale, Uint8 r, Uint8 g, Uint8 b);
 
 #endif

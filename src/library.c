@@ -161,44 +161,143 @@ static int has_img_ext(const char *name)
     return 0;
 }
 
+/* ---------------- cover selection (CoverName.java, ported) ---------------- */
+
+/* Fold a folder name or a filename to a comparable form — the phone's
+ * CoverName.key(). The one thing dropped is its NFC normalisation, which needs
+ * ICU: the phone wants it because SAF can hand the same Japanese name back in
+ * either normal form, whereas here both names come out of one readdir of one
+ * filesystem (the same trade the waveform sidecar lookup makes). */
+static void cover_key(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    int group = 0;
+    const char *p = in;
+    if (!n) return;
+    if (!in) { out[0] = 0; return; }
+    for (; *p && o + 2 < n; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '(') { group = 1; continue; }          /* drop the group AND its text */
+        if (c == '[') { group = 2; continue; }
+        if (group == 1 && c == ')') { group = 0; out[o++] = ' '; continue; }
+        if (group == 2 && c == ']') { group = 0; out[o++] = ' '; continue; }
+        if (group) continue;
+        /* the dash characters folders mix freely: U+2010..U+2015 and U+2212 */
+        if (c == 0xE2 && p[1] && p[2] &&
+            (((unsigned char)p[1] == 0x80 && (unsigned char)p[2] >= 0x90 && (unsigned char)p[2] <= 0x95) ||
+             ((unsigned char)p[1] == 0x88 && (unsigned char)p[2] == 0x92))) {
+            out[o++] = '-';
+            p += 2;
+            continue;
+        }
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+        out[o++] = (char)c;
+    }
+    out[o] = 0;
+    /* then: " - " for every dash, collapse runs of spaces, trim */
+    {
+        char tmp[512];
+        size_t i = 0, j = 0, lim = n < sizeof tmp ? n : sizeof tmp;
+        for (i = 0; out[i] && j + 2 < lim; i++) {
+            if (out[i] == ' ') {
+                size_t k = i;
+                while (out[k] == ' ') k++;
+                if (out[k] == '-') {                    /* spaces before a dash */
+                    tmp[j++] = ' ';
+                    i = k - 1;
+                    continue;
+                }
+                if (j && tmp[j - 1] != ' ') tmp[j++] = ' ';
+                i = k - 1;
+                continue;
+            }
+            tmp[j++] = out[i];
+        }
+        tmp[j] = 0;
+        {
+            char *s = tmp;
+            while (*s == ' ') s++;
+            /* the precision keeps the copy inside `out` whatever n is — the
+             * compiler is right that %s alone could overrun it */
+            snprintf(out, n, "%.*s", (int)(lim ? lim - 1 : 0), s);
+            o = strlen(out);
+            while (o && out[o - 1] == ' ') out[--o] = 0;
+        }
+    }
+}
+
+int cover_rank(const char *name, const char *folder)
+{
+    const char *dot;
+    char stem[512], ext[32], fk[512], sk[512];
+    size_t l;
+    int i;
+
+    if (!name) return -1;
+    dot = strrchr(name, '.');
+    if (!dot || dot == name) return -1;
+    l = (size_t)(dot - name);
+    if (l >= sizeof stem) l = sizeof stem - 1;
+    memcpy(stem, name, l);
+    stem[l] = 0;
+    snprintf(ext, sizeof ext, "%s", dot + 1);
+    for (i = 0; stem[i]; i++) if (stem[i] >= 'A' && stem[i] <= 'Z') stem[i] = (char)(stem[i] + 32);
+    for (i = 0; ext[i]; i++) if (ext[i] >= 'A' && ext[i] <= 'Z') ext[i] = (char)(ext[i] + 32);
+
+    if (strcmp(ext, "jpg") && strcmp(ext, "jpeg") && strcmp(ext, "png") &&
+        strcmp(ext, "bmp") && strcmp(ext, "webp")) return -1;
+    if (!strcmp(stem, "cover"))  return 0;
+    if (!strcmp(stem, "folder")) return 1;
+    if (!strcmp(stem, "front"))  return 2;
+    if (!strcmp(stem, "album"))  return 3;      /* EXACT: AlbumArtSmall.jpg is a thumbnail */
+    if (!strncmp(stem, "cover", 5)) return 4;
+    cover_key(folder, fk, sizeof fk);
+    cover_key(stem, sk, sizeof sk);
+    return (fk[0] && !strcmp(fk, sk)) ? 5 : -1;
+}
+
 /* find the best cover image in dir.
- * order: known names (cover/folder/front/album/art...) > "album - artist" style
- * names > a lone image. ambiguous multi-image folders with no obvious cover → -1 */
+ * first the ranked names above — so the desktop and the phone agree on every
+ * album that has a conventional one — and, only if none of those matched, a lone
+ * image, which cannot be a mispick because there is nothing to pick between.
+ * Enumerated across Nova's 633 albums: five reach that fallback and every one of
+ * them holds exactly one image, while no album holds several unmatched images, so
+ * this can never start choosing between back.jpg, a disc scan and a spectrogram.
+ * Several unmatched images decline, as they always have. */
 int lib_find_cover(const char *dir, char *out, int outsz)
 {
-    static const char *known[] = { "cover", "front", "frontcover", "albumart",
-                                   "folder", "album", "art", "front_cover", NULL };
     DIR *d = opendir(dir);
     struct dirent *de;
-    char best[L_PATH_MAX] = "";
-    int best_score = -1;
-    int count = 0;
+    char best[512] = "", only[512] = "";
+    const char *folder;
+    int best_rank = -1, n_img = 0;
+
     if (!d) return -1;
+    folder = strrchr(dir, '/');
+    folder = folder ? folder + 1 : dir;
     while ((de = readdir(d))) {
-        char stem[256];
-        size_t l;
+        int r;
         if (de->d_name[0] == '.') continue;
         if (!has_img_ext(de->d_name)) continue;
-        count++;
-        /* stem, lowercased */
-        snprintf(stem, sizeof stem, "%s", de->d_name);
-        l = strlen(stem);
-        while (l && stem[l - 1] != '.') stem[--l] = 0;
-        if (l) stem[l - 1] = 0;
-        for (char *p = stem; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
-        int score = 10;
-        for (int k = 0; known[k]; k++)
-            if (!strcmp(stem, known[k])) { score = 100; break; }
-        if (score == 10 && strstr(stem, " - "))
-            score = 50;
-        if (score > best_score) {
-            best_score = score;
+        n_img++;
+        if (n_img == 1) snprintf(only, sizeof only, "%s", de->d_name);
+        r = cover_rank(de->d_name, folder);
+        if (r < 0) continue;
+        /* best rank wins; ties break on the name so the answer cannot depend on
+         * the order the filesystem happens to hand entries back */
+        if (best_rank < 0 || r < best_rank ||
+            (r == best_rank && strcmp(de->d_name, best) < 0)) {
+            best_rank = r;
             snprintf(best, sizeof best, "%s", de->d_name);
         }
     }
     closedir(d);
-    if (best_score < 0) return -1;
-    if (best_score == 10 && count > 1) return -1;   /* ambiguous: back.jpg + tray.jpg etc */
+
+    if (best_rank < 0) {
+        if (n_img != 1 || !only[0]) return -1;
+        snprintf(out, outsz, "%s/%s", dir, only);
+        return 0;
+    }
     snprintf(out, outsz, "%s/%s", dir, best);
     return 0;
 }

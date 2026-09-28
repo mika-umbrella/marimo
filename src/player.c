@@ -100,6 +100,16 @@ int player_playlist_count(Player *p)
     return (int)n;
 }
 
+/* See player.h: the queue is not mirrored in mpv, so after a reorder or a removal
+ * the only thing to fix is which entry plays next. */
+void player_set_next(Player *p, const char *path)
+{
+    const char *rm[] = { "playlist-remove", "1", NULL };
+    const char *app[] = { "loadfile", path, "append-play", NULL };
+    if (player_playlist_count(p) > 1) mpv_command(p->h, rm);
+    if (path) mpv_command(p->h, app);
+}
+
 void player_dbg_playlist(Player *p)
 {
     mpv_node node;
