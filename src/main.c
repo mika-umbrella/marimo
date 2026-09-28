@@ -40,7 +40,7 @@
 #include "fs.h"
 #include <mpv/client.h>
 
-#define APP_VER "1.1"
+#define APP_VER "1.2"
 
 /* ---------------- palette ---------------- */
 static const SDL_Color C_BG0    = { 13, 13, 15, 255 };
