@@ -1879,8 +1879,24 @@ static void play_dir(const char *path, int replace)
     TagSort *ts = NULL;
     for (int i = 0; i < n; i++) if (e[i].kind == L_FILE) nfiles++;
     if (nfiles == 0) {
+        /* Not necessarily empty. Three albums here keep their tracks in disc
+         * subfolders — Disc 1 / Disc 2, TRAIL [Disc 1 2009] / TRAIL [Disc 2 2010],
+         * and folders named after the album itself — and the names are too varied
+         * to match on, so position is the rule.
+         *
+         * lib_scan orders directories by name, so adding each subfolder in turn
+         * gives Disc 1 before Disc 2, and recursing into this same function keeps
+         * each disc's own track order (and its tag sorting) for free. Only the
+         * first subfolder inherits `replace`, so the queue is cleared once. */
+        int subs = 0;
+        for (int i = 0; i < n; i++) {
+            if (e[i].kind != L_DIR) continue;
+            if (!strcmp(e[i].name, "..")) continue;
+            play_dir(e[i].path, subs == 0 ? replace : 0);
+            subs++;
+        }
         lib_free_entries(e);
-        set_status("no audio files in that folder");
+        if (subs == 0) set_status("no audio files in that folder");
         return;
     }
     ts = (TagSort *)calloc(nfiles, sizeof(TagSort));
