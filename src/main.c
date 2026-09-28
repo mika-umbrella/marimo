@@ -3831,9 +3831,17 @@ static int selftest(const char *cfgfile_global)
          * first case and none reach the second. */
         {
             char tdir[256], p[512], cov[1024];
+            const char *tbase = getenv("TMPDIR");
             FILE *f;
-            snprintf(tdir, sizeof tdir, "/tmp/marimo-cover-test-%d", (int)getpid());
-            if (mkdir(tdir, 0755) != 0) {
+            /* Windows has no /tmp — a path without a drive resolves against the
+             * current one, and C:\tmp is not normally creatable, so the fixture
+             * goes wherever the platform says temp is. Under wine /tmp works by
+             * accident, which is exactly why this only shows up on real windows. */
+            if (!tbase || !*tbase) tbase = getenv("TEMP");
+            if (!tbase || !*tbase) tbase = getenv("TMP");
+            if (!tbase || !*tbase) tbase = "/tmp";
+            snprintf(tdir, sizeof tdir, "%s/marimo-cover-test-%d", tbase, (int)getpid());
+            if (fs_mkdir(tdir) != 0) {
                 printf("FAIL: cover fixture dir\n");
                 ok = 0;
             } else {

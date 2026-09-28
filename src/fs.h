@@ -13,6 +13,10 @@
 FILE *fs_fopen(const char *path, const char *mode);
 int   fs_stat(const char *path, struct stat *st);
 int   fs_access(const char *path, int mode);
+/* make a directory if it is not there: POSIX mkdir takes a mode and mingw's does not
+ * (and it needs the wide call, since a cache dir under a Japanese path is ordinary
+ * here). EEXIST is not a failure — the callers all treat it as "already fine". */
+int   fs_mkdir(const char *path);
 
 #ifdef _WIN32
 /* malloc'd wide copy of a UTF-8 string (caller frees), NULL on failure */

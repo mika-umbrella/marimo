@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #endif
 #include "album.h"
+#include "fs.h"
 #include "library.h"
 #include "libcache.h"
 #include "tags.h"
@@ -313,7 +314,7 @@ static int thumb_cache_path(const char *dir, int size, char *out, size_t n)
         if (!home || !*home) return 0;
         snprintf(d, sizeof d, "%s/.cache/marimo/thumbs", home);
     }
-    mkdir(d, 0755);      /* EEXIST is the normal case */
+    fs_mkdir(d);         /* EEXIST is the normal case */
     snprintf(out, n, "%s/%016llx-%d.raw", d, (unsigned long long)thumb_hash(dir), size);
     return 1;
 }

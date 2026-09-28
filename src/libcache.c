@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #endif
 #include "libcache.h"
+#include "fs.h"
 #include "library.h"
 
 #include <dirent.h>
@@ -209,7 +210,7 @@ static int cache_file(char *out, size_t n)
         if (!home || !*home) return 0;
         snprintf(dir, sizeof dir, "%s/.cache/marimo", home);
     }
-    mkdir(dir, 0755);   /* EEXIST is the normal case */
+    fs_mkdir(dir);       /* EEXIST is the normal case */
     snprintf(out, n, "%s/library.txt", dir);
     return 1;
 }
