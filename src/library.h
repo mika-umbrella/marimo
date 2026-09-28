@@ -20,6 +20,13 @@ int lib_scan(const char *dir, LibEntry **out);
 void lib_free_entries(LibEntry *e);
 /* find a cover image in dir; 0 + out on success, -1 if none */
 int lib_find_cover(const char *dir, char *out, int outsz);
+
+/* Which file in a folder is the cover, from its name alone — a port of
+ * marimo-android's CoverName.rank(): 0 cover, 1 folder, 2 front, 3 album
+ * (exact, never a prefix: AlbumArtSmall.jpg is a 6 KB Windows Media Player
+ * thumbnail), 4 a cover* variant, 5 the folder's own "ARTIST - ALBUM" name,
+ * -1 not a cover. Exposed so the selftest can run the phone's own vectors. */
+int cover_rank(const char *name, const char *folder);
 int lib_is_audio(const char *name);
 
 #endif

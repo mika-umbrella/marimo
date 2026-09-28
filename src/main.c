@@ -3359,6 +3359,157 @@ static int selftest(const char *cfgfile_global)
         if (!ok) fails++;
     }
 
+    /* covers: marimo-android's CoverName rules, run against its own test vectors.
+     * The half that matters is the names that must NOT match — booklet scans, a
+     * disc scan, a "proof" print, another album's artist-album name and the 6 KB
+     * Windows Media Player thumbnails all sit beside real covers, and any of them
+     * matching silently gives an album the wrong art. Two of the phone's cases are
+     * missing here because they need NFC normalisation of Japanese, which needs
+     * ICU; the reason the port can skip it is in cover_key(). */
+    {
+        int ok = 1, n = 0;
+        const char *cep = "cephalo - (2025) gloaming point [OPUS]";
+        const char *sh  = "SICK HACK - (2023) BOCCHI THE ROCK! EXTRA MUSIC 3 [OPUS]";
+        const char *ram = "Rammstein - (2019) RAMMSTEIN [OPUS]";
+#define CR(name, folder, want) do { \
+        int g_ = cover_rank((name), (folder)); \
+        n++; \
+        if (g_ != (want)) { \
+            printf("FAIL: cover_rank(\"%s\") = %d, want %d\n", (name) ? (name) : "(null)", g_, (want)); \
+            ok = 0; \
+        } \
+    } while (0)
+        /* conventional names, and the order they win in */
+        CR("cover.jpg", cep, 0);
+        CR("COVER.JPEG", cep, 0);
+        CR("Folder.png", cep, 1);
+        CR("front.webp", cep, 2);
+        CR("cover.webm", cep, -1);
+        CR("album.jpg", sh, 3);
+        CR("Album.JPG", sh, 3);
+        /* cover* variants are the extra scans of a cover */
+        CR("cover_1.jpg", sh, 4);
+        CR("cover_1_2_3_4_5_6_7.jpg", sh, 4);
+        CR("cover 2.jpeg", sh, 4);
+        CR("Cover [Limited Edition].jpg", sh, 4);
+        CR("Cover no obi.jpg", sh, 4);
+        /* the folder's own artist - album name, real pairs from her library */
+        CR("96-glass & Lzie - Rave Like Mashing.jpg",
+           "96-glass & Lzie - (2021) Rave Like Mashing [OPUS]", 5);
+        CR("Cotton Pantie's - My Sweet Honey Biscuit!.jpg",
+           "Cotton Pantie's - (2002) My Sweet Honey Biscuit! [OPUS]", 5);
+        CR("DJ Sharpnel - MAD BREAKS.jpg", "DJ Sharpnel - (2005) Mad Breaks [OPUS]", 5);   /* case */
+        CR("きのこ帝国 - eureka.jpg", "きのこ帝国 - (2013) eureka [OPUS]", 5);
+        CR("Babymetal - Babymetal.jpg", "Babymetal - (2014) Babymetal [OPUS]", 5);
+        /* a dash flavour may differ between the folder and the image */
+        CR("DJ Sharpnel - 悩殺\xe2\x99\xa5 ハードブレイク.jpg",
+           "DJ Sharpnel \xe2\x80\x93 (2004) 悩殺\xe2\x99\xa5 ハードブレイク [OPUS]", 5);      /* en dash */
+        CR("ヒトリエ - WONDER and WONDER.jpg",
+           "ヒトリエ \xe2\x80\x94 (2014) WONDER and WONDER [OPUS]", 5);                       /* em dash */
+        /* brackets inside the title are dropped on both sides, so they still agree */
+        CR("Rammstein - Mutter (KSL Edition).jpg",
+           "Rammstein - (2019) Mutter (KSL Edition) [OPUS]", 5);
+        /* must NOT match */
+        CR("Booklet_01.jpg", "Angus McSix - (2023) Angus McSix and the Sword of Power [OPUS]", -1);
+        CR("Disc_02_matrix.jpg", "Angus McSix - (2023) Angus McSix and the Sword of Power [OPUS]", -1);
+        CR("Digipak_Inside_01_left_center.jpg", "Angus McSix - (2023) Angus McSix and the Sword of Power [OPUS]", -1);
+        CR("00. Archspire - The Lucid Collective proof.jpg",
+           "Archspire - (2014) The Lucid Collective [OPUS]", -1);
+        CR("Boris - Volume Five -Pink Days- - Archive2020_text_Five.png",
+           "Boris - (2020) Volume Five Pink Days [OPUS]", -1);
+        CR("output.png", "Boris - (1996) Absolutego [OPUS]", -1);
+        CR("Babymetal - Babymetal.jpg", "96-glass & Lzie - (2021) Rave Like Mashing [OPUS]", -1);
+        CR("waves.marimo", sh, -1);
+        CR("01 ワタシダケユウレイ.opus", sh, -1);
+        CR("cover", sh, -1);          /* no extension */
+        CR("cover.txt", sh, -1);      /* not an image */
+        CR(NULL, sh, -1);
+        /* 6 KB thumbnails: `album` must be exact or these become the album art */
+        CR("AlbumArtSmall.jpg", ram, -1);
+        CR("albumart.jpg", ram, -1);
+        CR("Folder_thumb.png", ram, -1);
+#undef CR
+
+        /* the one behaviour this port adds: a lone unmatched image is taken (it
+         * cannot be a mispick, there is nothing to choose between), but several
+         * unmatched images are refused. Five albums in this library reach the
+         * first case and none reach the second. */
+        {
+            char tdir[256], p[512], cov[1024];
+            FILE *f;
+            snprintf(tdir, sizeof tdir, "/tmp/marimo-cover-test-%d", (int)getpid());
+            if (mkdir(tdir, 0755) != 0) {
+                printf("FAIL: cover fixture dir\n");
+                ok = 0;
+            } else {
+                snprintf(p, sizeof p, "%s/Civilisation.jpg", tdir);
+                f = fopen(p, "wb");
+                if (f) fclose(f);
+                n++;
+                if (lib_find_cover(tdir, cov, sizeof cov) != 0) {
+                    printf("FAIL: a lone unmatched image should be the cover\n");
+                    ok = 0;
+                }
+                snprintf(p, sizeof p, "%s/spectrogram.png", tdir);
+                f = fopen(p, "wb");
+                if (f) fclose(f);
+                n++;
+                if (lib_find_cover(tdir, cov, sizeof cov) == 0) {
+                    printf("FAIL: several unmatched images must decline (took %s)\n", cov);
+                    ok = 0;
+                }
+                snprintf(p, sizeof p, "%s/Civilisation.jpg", tdir);
+                unlink(p);
+                snprintf(p, sizeof p, "%s/spectrogram.png", tdir);
+                unlink(p);
+                rmdir(tdir);
+            }
+        }
+        printf(ok ? "cover: %d rank vectors ok\n" : "cover: FAILED\n", n);
+        if (!ok) fails++;
+    }
+
+    /* Census the matcher over the whole library: the vectors prove the rule, this
+     * proves what it does to 633 real albums, which is where a rule that reads
+     * correctly still surprises you. Home-brew: it does not fit anywhere else.
+     *   MARIMO_COVER_CHECK="$HOME/Music" ./build/marimo --selftest */
+    if (getenv("MARIMO_COVER_CHECK")) {
+        const char *root = getenv("MARIMO_COVER_CHECK");
+        DIR *d = opendir(root);
+        if (!d) {
+            printf("cover census: %s not accessible\n", root);
+        } else {
+            struct dirent *de;
+            int albums = 0, lone = 0, none = 0, ranks[6] = { 0, 0, 0, 0, 0, 0 };
+            while ((de = readdir(d)) != NULL) {
+                char path[L_PATH_MAX], cov[1024];
+                struct stat st;
+                if (de->d_name[0] == '.') continue;
+                snprintf(path, sizeof path, "%s/%s", root, de->d_name);
+                if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                albums++;
+                if (lib_find_cover(path, cov, sizeof cov) != 0) { none++; continue; }
+                {
+                    const char *base = strrchr(cov, '/');
+                    int r;
+                    base = base ? base + 1 : cov;
+                    r = cover_rank(base, de->d_name);
+                    if (r >= 0 && r < 6) {
+                        ranks[r]++;
+                    } else {
+                        lone++;
+                        printf("cover census: lone  %-38.38s -> %s\n", de->d_name, base);
+                    }
+                }
+            }
+            closedir(d);
+            printf("cover census: %d albums — cover %d, folder %d, front %d, album %d, "
+                   "cover* %d, artist-album %d, lone %d, none %d\n",
+                   albums, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4], ranks[5],
+                   lone, none);
+        }
+    }
+
     /* queue logic */
     {
         Queue q;
