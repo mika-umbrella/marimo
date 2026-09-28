@@ -77,7 +77,7 @@ typedef struct {
     SDL_Rect seek, time;
     SDL_Rect b_shuf, b_rep, vol_icon, vol, vol_txt;
     SDL_Rect b_minimize, b_mini, b_gear, b_close;
-    SDL_Rect tabs_lib, tabs_q, tabs_recap;
+    SDL_Rect tabs_lib, tabs_q, tabs_recap, tabs_player;
     SDL_Rect breadcrumb;
     SDL_Rect alpha;
     SDL_Rect list, status;
@@ -497,6 +497,10 @@ static void layout(void)
         L->tabs_lib = (SDL_Rect){ PAD, ty, 84, TAB_H };
         L->tabs_q = (SDL_Rect){ PAD + 90, ty, 84, TAB_H };
         L->tabs_recap = (SDL_Rect){ PAD + 180, ty, 84, TAB_H };
+        /* Player is deliberately the LAST tab, i.e. A.tab == 3. Adding it in the
+         * middle would renumber the others and quietly change what every existing
+         * `A.tab == 0/1/2` check means — including the recap pane's. */
+        L->tabs_player = (SDL_Rect){ PAD + 270, ty, 84, TAB_H };
         L->breadcrumb.x = PAD; L->breadcrumb.y = ty + TAB_H;
         L->breadcrumb.w = w - 2 * PAD; L->breadcrumb.h = 20;
         L->list.x = 0; L->list.y = ty + TAB_H + (A.tab == 0 ? 20 : 0);
@@ -828,11 +832,11 @@ static void draw_playerbar(void)
 
 static void draw_tabs(void)
 {
-    SDL_Rect t[3] = { A.L.tabs_lib, A.L.tabs_q, A.L.tabs_recap };
-    const char *names[3] = { "Library", "Queue", "Recap" };
+    SDL_Rect t[4] = { A.L.tabs_lib, A.L.tabs_q, A.L.tabs_recap, A.L.tabs_player };
+    const char *names[4] = { "Library", "Queue", "Recap", "Player" };
     int mx, my;
     SDL_GetMouseState(&mx, &my);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         if (inr(t[i], mx, my))
             fill_panel(t[i], C_BG2, theme_alpha_panel());
         SDL_Color c = A.tab == i ? C_ACC : C_TXT;
@@ -1554,6 +1558,65 @@ static void draw_queue_gesture(void)
     }
 }
 
+/* The player pane: the cover at size, with the title block under it. The transport,
+ * seek, shuffle and repeat deliberately stay where they already are in the compact
+ * bar above — this is the art and the name at full size, not a second set of
+ * controls that could disagree with the first set. */
+static void draw_player_pane(void)
+{
+    SDL_Rect area = A.L.list;
+    SDL_Rect art;
+    int side = area.h - 120;
+
+    if (side > area.w - 80) side = area.w - 80;
+    if (side < 40) side = 40;
+    art = (SDL_Rect){ area.x + (area.w - side) / 2, area.y + 14, side, side };
+
+    if (A.art) {
+        SDL_RenderCopy(A.ren, A.art, NULL, &art);
+    } else {
+        draw_text(art.x + art.w / 2 - 10, art.y + art.h / 2 - 12, "\xe2\x99\xaa", C_DIM, 5);
+    }
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawRect(A.ren, &art);
+
+    {
+        /* Read the queue's current item, exactly as the player bar does — NOT
+         * A.last_name, which only exists once something has actually played. On a
+         * restored queue the bar named the track and this pane said "marimo". */
+        char t[512] = "marimo", artist[512] = "", album[512] = "";
+        int y = art.y + art.h + 10, w;
+
+        q_lock(&A.q);
+        if (A.q.cur >= 0 && A.q.cur < A.q.n) {
+            QItem *it = &A.q.items[A.q.cur];
+            snprintf(t, sizeof t, "%s", it->meta.title[0] ? it->meta.title : it->name);
+            snprintf(artist, sizeof artist, "%s", it->meta.artist);
+            snprintf(album, sizeof album, "%s", it->meta.album);
+        } else if (A.have_last) {
+            snprintf(t, sizeof t, "%s", A.last_name[0] ? A.last_name : "marimo");
+            snprintf(artist, sizeof artist, "%s", A.last_meta.artist);
+            snprintf(album, sizeof album, "%s", A.last_meta.album);
+        }
+        q_unlock(&A.q);
+        {   /* clip before centring: a long title would run off both edges */
+            char clipped[120];
+            snprintf(clipped, sizeof clipped, "%.90s", t);
+            snprintf(t, sizeof t, "%s", clipped);
+        }
+        w = font_w(&A.font, t, 2);
+        draw_text(area.x + (area.w - w) / 2, y, t, C_TXT, 2);
+        if (artist[0]) {
+            w = font_w(&A.font, artist, 1);
+            draw_text(area.x + (area.w - w) / 2, y + 26, artist, C_DIM, 1);
+        }
+        if (album[0]) {
+            w = font_w(&A.font, album, 1);
+            draw_text(area.x + (area.w - w) / 2, y + 42, album, C_DIM, 1);
+        }
+    }
+}
+
 static void render(void)
 {
     A.tip = 0;
@@ -1573,6 +1636,11 @@ static void render(void)
         draw_tabs();
         if (A.tab == 2) {
             draw_recap();
+        } else if (A.tab == 3) {
+            /* without this branch the else below would draw the *queue rows* over
+             * the player pane — tab 3 is not 0, so draw_list_rows would take the
+             * queue path and fill the pane with a track list */
+            draw_player_pane();
         } else {
             if (A.tab == 0) draw_breadcrumb();
             draw_list_rows(A.tab);
@@ -2655,6 +2723,11 @@ static void handle_mouse(SDL_Event *ev)
                     A.tab = 2;
                     A.recap_valid = 0;        /* fresh numbers on entry */
                     A.recap_scroll = 0;
+                    layout();
+                    return;
+                }
+                if (inr(A.L.tabs_player, x, y) && ev->button.button == SDL_BUTTON_LEFT) {
+                    A.tab = 3;
                     layout();
                     return;
                 }
