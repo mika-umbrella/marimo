@@ -206,6 +206,13 @@ typedef struct {
 
 static Thumb thumbs[THUMBS];
 static int thumbs_next;
+static int thumb_decoded, thumb_from_disk;
+
+void album_thumb_stats(int *decoded, int *cached)
+{
+    if (decoded) *decoded = thumb_decoded;
+    if (cached) *cached = thumb_from_disk;
+}
 
 /* Decoding happens here, never on the render thread. Some of these covers are
  * 25 MB JPEGs (that is not a typo — the census found one at 25,251,998 bytes) and
@@ -331,6 +338,10 @@ static void *thumb_thread(void *unused)
     tw.have_result = 1;
     tw.running = 0;
     pthread_mutex_unlock(&tw.lock);
+    /* counted here, not where the texture is collected: the collection site can
+     * also be reached via the disk path, which made a cold run report "0 decoded,
+     * 14 from disk" — its own freshly written files read straight back. */
+    if (ok) thumb_decoded++;
     return NULL;
 }
 
@@ -375,6 +386,7 @@ SDL_Texture *album_thumb(SDL_Renderer *ren, const char *dir, int size)
                 fclose(f);
                 free(buf);
                 if (t) {
+                    thumb_from_disk++;
                     slot = &thumbs[thumbs_next++ % THUMBS];
                     if (slot->tex) SDL_DestroyTexture(slot->tex);
                     snprintf(slot->dir, sizeof slot->dir, "%s", dir);

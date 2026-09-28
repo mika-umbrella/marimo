@@ -3992,6 +3992,11 @@ static int screenshot(const char *out)
     rc = IMG_SavePNG(surf, out);
     SDL_FreeSurface(surf);
     printf("screenshot saved to %s\n", out);
+    {
+        int decoded = 0, cached = 0;
+        album_thumb_stats(&decoded, &cached);
+        printf("thumbs: %d decoded, %d from disk cache\n", decoded, cached);
+    }
     return rc == 0 ? 0 : 1;
 }
 

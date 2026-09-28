@@ -33,6 +33,11 @@ int album_tracks(const char *dir);
  * again next frame. Textures belong to the cache — never free them. */
 SDL_Texture *album_thumb(SDL_Renderer *ren, const char *dir, int size);
 
+/* How many thumbnails were decoded this run versus served from the disk cache.
+ * Exists so "the cache works" is a number rather than a claim — a warm run must
+ * decode nothing. */
+void album_thumb_stats(int *decoded, int *cached);
+
 /* Tags for one track file, from a cache: title/artist and seconds (0 when the tag
  * reader could not say). Returns 1 when anything was read, so callers can fall
  * back to the filename. Reading is the fast FLAC/MP3 path, and it happens once per
