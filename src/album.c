@@ -318,21 +318,12 @@ static int thumb_cache_path(const char *dir, int size, char *out, size_t n)
     return 1;
 }
 
-/* the whole decode + shrink, with no SDL renderer anywhere in it, so it is safe
- * on the worker */
-static int thumb_decode(const char *dir, int size, unsigned char *out)
+/* the shrink + letterbox, shared by both art sources below */
+static int thumb_from_surface(SDL_Surface *conv, int size, unsigned char *out)
 {
-    char cov[1024];
-    SDL_Surface *raw, *conv, *small;
+    SDL_Surface *small = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32,
+                                                        SDL_PIXELFORMAT_ARGB8888);
     int ok = 0;
-
-    if (lib_find_cover(dir, cov, sizeof cov) != 0 || !cov[0]) return 0;
-    raw = IMG_Load(cov);
-    if (!raw) return 0;
-    conv = SDL_ConvertSurfaceFormat(raw, SDL_PIXELFORMAT_ARGB8888, 0);
-    SDL_FreeSurface(raw);
-    if (!conv) return 0;
-    small = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_ARGB8888);
     if (small) {
         /* letterbox, not crop: a non-square cover should still be recognisable */
         SDL_Rect dst = { 0, 0, size, size };
@@ -356,6 +347,70 @@ static int thumb_decode(const char *dir, int size, unsigned char *out)
         ok = 1;
         SDL_FreeSurface(small);
     }
+    return ok;
+}
+
+/* The album's first audio file, or 0. Every track in an album carries the same
+ * embedded picture, so the first one is as good as any — and this only runs for
+ * albums that have no cover *file*, so it costs nothing for the other 600. */
+static int first_audio(const char *dir, char *out, size_t n)
+{
+    LibEntry *e = NULL;
+    int ns = lib_scan(dir, &e), i, found = 0;
+    for (i = 0; i < ns && !found; i++) {
+        if (e[i].kind == L_FILE) {
+            /* LibEntry.path is already the full file path for L_FILE entries —
+             * album_track_tags() is called with it directly, and load_art() derives
+             * the directory from it with strrchr. Joining name on again was asking
+             * the tag reader to open a file inside a file. */
+            snprintf(out, n, "%s", e[i].path);
+            found = 1;
+        }
+    }
+    for (i = 0; i < ns && !found; i++) {          /* disc subfolders, one level */
+        if (e[i].kind == L_DIR && strcmp(e[i].name, "..")) {
+            LibEntry *s = NULL;
+            int nss = lib_scan(e[i].path, &s), j;
+            for (j = 0; j < nss && !found; j++) {
+                if (s[j].kind == L_FILE) {
+                    snprintf(out, n, "%s", s[j].path);
+                    found = 1;
+                }
+            }
+            lib_free_entries(s);
+        }
+    }
+    lib_free_entries(e);
+    return found;
+}
+
+/* The whole decode + shrink, with no SDL renderer anywhere in it, so it is safe
+ * on the worker. Art comes from the ranked cover file when the album has one, and
+ * otherwise from the picture embedded in the tracks — the player pane has always
+ * fallen back to mpv's embedded art, but the rows never did, so an album whose
+ * only art lives in its tags showed a folder glyph in the list. */
+static int thumb_decode(const char *dir, int size, unsigned char *out)
+{
+    char cov[1024], track[4096];    /* LibEntry.path can be 2047 bytes: gcc says so */
+    SDL_Surface *raw = NULL, *conv;
+    int ok;
+
+    if (lib_find_cover(dir, cov, sizeof cov) == 0 && cov[0])
+        raw = IMG_Load(cov);
+    if (!raw && first_audio(dir, track, sizeof track)) {
+        unsigned char *art = NULL;
+        size_t len = 0;
+        if (tag_read_art(track, &art, &len) == 0 && art && len) {
+            SDL_RWops *rw = SDL_RWFromConstMem(art, (int)len);
+            if (rw) raw = IMG_Load_RW(rw, 1);
+            free(art);
+        }
+    }
+    if (!raw) return 0;
+    conv = SDL_ConvertSurfaceFormat(raw, SDL_PIXELFORMAT_ARGB8888, 0);
+    SDL_FreeSurface(raw);
+    if (!conv) return 0;
+    ok = thumb_from_surface(conv, size, out);
     SDL_FreeSurface(conv);
     return ok;
 }
