@@ -44,6 +44,7 @@
 #include "waveform.h"
 #include "theme.h"
 #include "bg.h"
+#include "album.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -852,19 +853,39 @@ static void draw_breadcrumb(void)
         parts[n++] = tok;
         tok = strtok(NULL, "/");
     }
-    int x = r.x;
-    SDL_Rect clip = r;
-    SDL_RenderSetClipRect(A.ren, &clip);
-    for (int i = 0; i < n; i++) {
-        draw_text(x, r.y + 2, "/", C_BD, 1);
-        x += 8;
-        int w = font_w(&A.font, parts[i], 1);
-        draw_text(x, r.y + 2, parts[i], C_DIM, 1);
-        x += w;
-        if (x > r.x + r.w) break;
+    /* "632 albums" / "12 tracks" on the right, the way the phone summarises the
+     * folder it is showing. Counted off the entry list, not by asking every folder
+     * how many tracks it holds: 632 opendirs over CIFS is seconds of stall to draw
+     * one line of text. So "albums" means "album folders", which at the root of
+     * Nova's library is exactly what they are. */
+    {
+        char summary[64] = "";
+        int dirs = 0, files = 0, sumw, i;
+        for (i = 0; i < A.n_entries; i++) {
+            if (A.entries[i].kind == L_DIR) dirs++;
+            else if (A.entries[i].kind == L_FILE) files++;
+        }
+        if (dirs && files)      snprintf(summary, sizeof summary, "%d albums \xc2\xb7 %d tracks", dirs, files);
+        else if (dirs)          snprintf(summary, sizeof summary, "%d albums", dirs);
+        else if (files)         snprintf(summary, sizeof summary, "%d tracks", files);
+        sumw = summary[0] ? font_w(&A.font, summary, 1) + 10 : 0;
+        if (summary[0]) draw_text(r.x + r.w - sumw + 4, r.y + 2, summary, C_DIM, 1);
+
+        int x = r.x;
+        SDL_Rect clip = r;
+        SDL_RenderSetClipRect(A.ren, &clip);
+        for (i = 0; i < n; i++) {
+            int w;
+            draw_text(x, r.y + 2, "/", C_BD, 1);
+            x += 8;
+            w = font_w(&A.font, parts[i], 1);
+            draw_text(x, r.y + 2, parts[i], C_DIM, 1);
+            x += w;
+            if (x > r.x + r.w - sumw) break;   /* never draw under the summary */
+        }
+        free(dup);
+        SDL_RenderSetClipRect(A.ren, NULL);
     }
-    free(dup);
-    SDL_RenderSetClipRect(A.ren, NULL);
 }
 
 static void draw_list_rows(int tab)
@@ -899,30 +920,67 @@ static void draw_list_rows(int tab)
 
         if (tab == 0) {
             LibEntry *e = &A.entries[idx];
-            SDL_Color icc = e->kind == L_DIR ? C_AMBER : C_ACC2;
-            font_draw_icon(&A.font, row.x + 4, y + 2, e->kind == L_DIR ? ICON_FOLDER : ICON_NOTE,
-                           1, icc.r, icc.g, icc.b);
+            /* An album folder gets its cover, its artist and its year, the way the
+             * phone's library rows do; a plain folder keeps the icon and a file
+             * keeps its size. The thumbnail is 16px in a 20px row, which is the
+             * phone's own proportion — its cover is about 85% of its row height.
+             * album_tracks() is cached, so this costs one opendir per folder ever
+             * rather than one per frame. */
+            int tracks = e->kind == L_DIR ? album_tracks(e->path) : -1;
+            char right[256] = "";
+            char shown[600] = "";
+            SDL_Texture *thumb = NULL;
+
+            if (tracks > 0) {
+                char artist[256], title[256];
+                int yr;
+                album_split(e->name, artist, sizeof artist, title, sizeof title);
+                yr = album_year(e->name);
+                /* the phone's row is [cover] title / artist · year, so the name
+                 * column gets the *parsed* title: showing the raw folder name
+                 * alongside the parsed parts prints the artist and the year twice
+                 * (it did, until this). Fall back to the folder name only when
+                 * parsing found no title at all. */
+                snprintf(shown, sizeof shown, "%s", title[0] ? title : e->name);
+                /* the precision is not decoration: without it the compiler cannot
+                 * see that 256+4+year fits in `right`, and it is right — a 256-char
+                 * artist would truncate mid-ESC-sequence. The row shows ~40 chars,
+                 * so chopping at 200 costs nothing and keeps the format intact. */
+                if (artist[0] && yr)      snprintf(right, sizeof right, "%.200s \xc2\xb7 %d", artist, yr);
+                else if (artist[0])       snprintf(right, sizeof right, "%.240s", artist);
+                else if (yr)              snprintf(right, sizeof right, "%d", yr);
+                thumb = album_thumb(A.ren, e->path, 16);
+            } else {
+                snprintf(shown, sizeof shown, "%s", e->name);
+                if (e->kind == L_FILE) fmt_size(right, e->size);
+            }
+
+            if (thumb) {
+                SDL_Rect td = { row.x + 3, y + 2, 16, 16 };
+                SDL_RenderCopy(A.ren, thumb, NULL, &td);
+            } else {
+                SDL_Color icc = e->kind == L_DIR ? C_AMBER : C_ACC2;
+                font_draw_icon(&A.font, row.x + 4, y + 2,
+                               e->kind == L_DIR ? ICON_FOLDER : ICON_NOTE,
+                               1, icc.r, icc.g, icc.b);
+            }
             {
                 char disp[600];
-                int szw = 0;
-                if (e->kind == L_FILE) {
-                    char sz[24];
-                    fmt_size(sz, e->size);
-                    szw = font_w(&A.font, sz, 1) + 10;
-                }
-                int avail = row.w - 26 - 12 - szw;
-                int trunc = fit_text(e->name, avail, disp, sizeof disp);
-                draw_text(row.x + 24, y + 2, disp,
-                          idx == sel ? C_ACC : (e->kind == L_DIR ? C_AMBER : C_TXT), 1);
+                int rw = right[0] ? font_w(&A.font, right, 1) + 12 : 12;
+                int avail = row.w - 26 - rw;
+                int trunc = fit_text(shown, avail, disp, sizeof disp);
+                /* an album's own name is body text, not a folder colour: the phone
+                 * keeps the bright name and dims only the artist/year line */
+                SDL_Color c = idx == sel ? C_ACC
+                            : e->kind == L_DIR ? (tracks > 0 ? C_TXT : C_AMBER) : C_TXT;
+                draw_text(row.x + 24, y + 2, disp, c, 1);
                 if (hover && trunc) {
                     snprintf(A.tip_buf, sizeof A.tip_buf, "%s", e->name);
                     A.tip = 1;
                 }
-                if (e->kind == L_FILE) {
-                    char sz[24];
-                    fmt_size(sz, e->size);
-                    int w = font_w(&A.font, sz, 1);
-                    draw_text(row.x + row.w - w - 10, y + 2, sz, C_DIM, 1);
+                if (right[0]) {
+                    int w = font_w(&A.font, right, 1);
+                    draw_text(row.x + row.w - w - 10, y + 2, right, C_DIM, 1);
                 }
             }
         } else {
@@ -1362,6 +1420,7 @@ static double bg_time(void)
 static void render(void)
 {
     A.tip = 0;
+    album_frame();      /* cover thumbnails get a couple of loads per frame, no more */
     {
         /* the backdrop wears the cover's colours, as on the phone, and drifts;
          * the panels and the accent stay fixed so text survives bright art. The
@@ -3244,6 +3303,62 @@ static int selftest(const char *cfgfile_global)
         if (!ok) fails++;
     }
 
+    /* album metadata. These vectors are not invented: they are the cases that were
+     * verified against marimo-android's Album.java by compiling and running it
+     * (see the skill), so this checks the port against the phone's behaviour
+     * rather than against my reading of it. Every one of them is a real folder
+     * shape from Nova's library. */
+    {
+        static const struct { const char *folder; int year; } yc[] = {
+            { "0TS - MACHINA MORI [2026.01.01]",                   2026 },
+            { "171 - 2020 - 飽き性",                                 2020 },
+            { "23.exe - (2020) WALK [FLAC] {2025 13433-8873443}",   2020 },
+            { "36g - (2012-01-01) ソーダ子ちゃんのゆめ",                    2012 },
+            { "36g - 劣性e.p (1999, 2008)",                        1999 },
+            { "385 - example album",                                  0 },
+            { "My Bloody Valentine - (2012) EP's 1988-1991 [FLAC]", 2012 },
+            { "SICK HACK - (2023) BOCCHI THE ROCK! EXTRA 3 (2026 Remaster) [FLAC]", 2023 },
+            { "annyahoo - fartboner 2002",                         2002 },
+            { "annyahoo - fartboner 9801",                            0 },
+            { "a☆ru - a☆ru vol.1 [FLAC] (01.01.2025)",             2025 },
+            { "Artist - (2016) Album [FLAC]",                      2016 },
+            { "No Year [FLAC]",                                       0 },
+            { "Album [2026] [FLAC]",                               2026 },
+        };
+        int ok = 1, i;
+        for (i = 0; i < (int)(sizeof yc / sizeof yc[0]); i++) {
+            int got = album_year(yc[i].folder);
+            if (got != yc[i].year) {
+                printf("FAIL: album_year(\"%s\") = %d, want %d\n", yc[i].folder, got, yc[i].year);
+                ok = 0;
+            }
+        }
+        {
+            static const struct { const char *folder, *artist, *title; } sc[] = {
+                { "0TS - (2025) MACHINA MORI [FLAC]", "0TS", "MACHINA MORI" },
+                { "36g - 劣性e.p (1999, 2008)",        "36g", "劣性e.p" },
+                { "？ (2023) [OPUS]",                   "",    "？" },
+                { "385 - example album",              "385", "example album" },
+                /* a bare year is left in the title: only brackets are stripped, and
+                 * guessing at bare years eats real ones ("fartboner 2002"). It reads
+                 * slightly redundant next to the year column — a known rough edge. */
+                { "171 - 2020 - 飽き性",                 "171", "2020 - 飽き性" },
+            };
+            char artist[256], title[256];
+            for (i = 0; i < (int)(sizeof sc / sizeof sc[0]); i++) {
+                album_split(sc[i].folder, artist, sizeof artist, title, sizeof title);
+                if (strcmp(artist, sc[i].artist) || strcmp(title, sc[i].title)) {
+                    printf("FAIL: album_split(\"%s\") = \"%s\" / \"%s\", want \"%s\" / \"%s\"\n",
+                           sc[i].folder, artist, title, sc[i].artist, sc[i].title);
+                    ok = 0;
+                }
+            }
+        }
+        printf(ok ? "album: %d year vectors and %d splits ok\n" : "album: FAILED\n",
+               (int)(sizeof yc / sizeof yc[0]), 5);
+        if (!ok) fails++;
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3965,6 +4080,7 @@ int main(int argc, char **argv)
         A.meta_running = 0;
     }
     if (A.tr) tagreader_destroy(A.tr);
+    album_free();
     player_destroy(A.pl);
     scrobble_shutdown();
     mpris_shutdown();
