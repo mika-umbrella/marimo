@@ -97,24 +97,27 @@ const char *icon_art[N_ICONS][16] = {
 ".##..#..........",
 ".##.............",
 },
-/* ICON_SHUFFLE */
+/* ICON_SHUFFLE - an X of two 1px diagonals with L-shaped arrowheads at the
+ * right-hand ends. The hand-drawn one had vertical sticks where the heads
+ * should be, which is what made it read as prickly. */
 {
 "................",
 "................",
 "................",
-"..........#.....",
-"..#.......#.....",
-"...##....#.#....",
-"....##....#.....",
-".....#..##......",
+"..#......###....",
+"...#......##....",
+"....#....#.#....",
+".....#..#.......",
 "......##........",
-"....#...##......",
-"...##....#.#....",
-"..#.......###...",
-"..........#.....",
+"......##........",
+".....#..#.......",
+"....#....#.#....",
+"...#......##....",
+"..#......###....",
 "................",
 "................",
-"................",},
+"................",
+},
 /* ICON_REPEAT — the rectangle plus two arrowheads. As a bare box it read as a box;
  * the arrowheads are what say "repeat". The stray pixel that sat above the right
  * edge is gone. */
