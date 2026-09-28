@@ -277,7 +277,10 @@ char *player_embedded_art(Player *p)
     } else if (mpv_get_property(p->h, "album-art", MPV_FORMAT_NODE, &node) == 0) {
         mpv_free_node_contents(&node);
     }
-    /* older mpv: metadata cover key */
+    /* older mpv exposed the picture as metadata; both this and the album-art
+     * property above are absent from mpv 0.41 (probed 2026-09-28), so this
+     * wrapper yields nothing on the current build. Callers read the tag
+     * themselves; this is kept only in case a future mpv brings either back. */
     {
         char *s = NULL;
         if (mpv_get_property(p->h, "metadata/by-key/cover", MPV_FORMAT_STRING, &s) == 0 && s) {
