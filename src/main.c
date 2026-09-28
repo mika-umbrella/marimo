@@ -140,6 +140,7 @@ typedef struct {
     int g_mode;             /* 0 none, 1 pressed, 2 reorder, 3 swipe */
     int g_from, g_to;       /* the row it started on, and where it is now */
     int g_x0, g_y0, g_dx;   /* press point, and how far sideways since */
+    int confirm;            /* a destructive action waiting on a yes/no */
     /* modal */
     int modal, m_focus;
     char m_fields[4][512];
@@ -1475,6 +1476,50 @@ static double bg_time(void)
     return (double)SDL_GetTicks64() / 1000.0;
 }
 
+/* Empty the queue, once the confirm says so. The player stops first and its
+ * preloaded next entry is dropped, so nothing is left pointing at a track the queue
+ * no longer holds — the player only ever holds current + next, and a stale "next"
+ * would play a track that has just been cleared. queue.dat picks this up on exit,
+ * which is how every other queue change is persisted. */
+static void queue_clear_do(void)
+{
+    int n;
+
+    q_lock(&A.q);
+    n = A.q.n;
+    q_clear(&A.q);
+    A.q.cur = -1;
+    q_unlock(&A.q);
+    player_stop(A.pl);
+    player_set_next(A.pl, NULL);
+    A.confirm = 0;
+    set_status("queue cleared (%d tracks)", n);
+}
+
+/* The phone asks before clearing the queue; this is the desktop's asking. Keys
+ * only for now (y / esc) — clicking the buttons is not wired yet, so it says so. */
+static void draw_confirm(void)
+{
+    SDL_Rect ov = { 0, 0, A.w, A.h };
+    char msg[128];
+    int pw = A.w - 60 < 340 ? A.w - 60 : 340;
+    SDL_Rect p = { (A.w - pw) / 2, 140, pw, 74 };
+
+    SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(A.ren, 0, 0, 0, 170);
+    SDL_RenderFillRect(A.ren, &ov);
+    SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(A.ren, C_BG1.r, C_BG1.g, C_BG1.b, 255);
+    SDL_RenderFillRect(A.ren, &p);
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawRect(A.ren, &p);
+
+    snprintf(msg, sizeof msg, "clear the queue? %d tracks", A.q.n);
+    draw_text(p.x + 10, p.y + 12, msg, C_TXT, 1);
+    draw_text(p.x + 10, p.y + 30, "this stops playback", C_DIM, 1);
+    draw_text(p.x + 10, p.y + 48, "[y] clear    [esc] keep", C_ACC, 1);
+}
+
 /* What a gesture looks like mid-flight: the dragged row highlighted in place (the
  * phone keeps the row put rather than lifting a shadow), or the remove band
  * growing in from the right. The phone pins a trash icon there; there is no trash
@@ -1536,6 +1581,7 @@ static void render(void)
         draw_status();
     }
     if (A.modal) draw_modal();
+    if (A.confirm) draw_confirm();
     draw_tooltip();
     draw_queue_gesture();
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
@@ -2355,6 +2401,14 @@ static void backspace_field(char *s)
 
 static void handle_key(SDL_Event *ev)
 {
+    if (A.confirm) {
+        /* the dialog owns the keyboard while it is up: y means it, anything else
+         * means never mind */
+        if (ev->key.keysym.sym == SDLK_y) queue_clear_do();
+        else if (ev->key.keysym.sym == SDLK_ESCAPE || ev->key.keysym.sym == SDLK_n ||
+                 ev->key.keysym.sym == SDLK_RETURN) A.confirm = 0;
+        return;
+    }
     if (A.modal) {
         if (ev->key.keysym.sym == SDLK_ESCAPE) { close_modal(0); return; }
         if (ev->key.keysym.sym == SDLK_TAB) {
@@ -2407,6 +2461,12 @@ static void handle_key(SDL_Event *ev)
         else if (A.tab == 1 && A.q_sel >= 0) queue_activate(A.q_sel);
         break;
     case SDLK_DELETE:
+        if (ev->key.keysym.mod & KMOD_CTRL) {
+            /* ctrl+delete empties the queue, after asking. Plain delete removes one
+             * row, and this is the one queue action that dragging cannot undo. */
+            if (A.q.n > 0) { A.confirm = 1; }
+            break;
+        }
         if (A.tab == 1) {
             int was_cur;
             q_lock(&A.q);
@@ -4426,6 +4486,11 @@ int main(int argc, char **argv)
     A.shot_mode = shot_path != NULL;
     /* captures of the settings screen, in the same spirit as MARIMO_TAB */
     if (getenv("MARIMO_MODAL")) open_modal();
+    /* the clear-queue confirmation, which otherwise needs two keystrokes */
+    if (getenv("MARIMO_CONFIRM")) {
+        A.tab = 1;
+        A.confirm = 1;
+    }
     /* and a gesture, which otherwise needs a hand on the mouse:
      *   MARIMO_GESTURE=swipe:120   MARIMO_GESTURE=reorder:3 */
     {
