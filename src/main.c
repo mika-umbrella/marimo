@@ -49,17 +49,12 @@
 #define APP_VER "1.1"
 
 /* ---------------- palette ---------------- */
-static const SDL_Color C_BG0    = { 13, 13, 15, 255 };
-static const SDL_Color C_BG1    = { 21, 21, 24, 255 };
-static const SDL_Color C_BG2    = { 30, 30, 35, 255 };
-static const SDL_Color C_BD     = { 44, 44, 51, 255 };
-static const SDL_Color C_TXT    = { 201, 201, 209, 255 };
-static const SDL_Color C_DIM    = { 107, 107, 118, 255 };
-static const SDL_Color C_ACC    = { 125, 255, 125, 255 };  /* winamp green */
-static const SDL_Color C_ACC2   = { 183, 140, 255, 255 };
-static const SDL_Color C_ERR    = { 255, 107, 107, 255 };
-static const SDL_Color C_SELBG  = { 20, 44, 20, 255 };
-static const SDL_Color C_AMBER  = { 232, 195, 106, 255 };
+/* The colours live in src/theme.c, because they are mode-dependent: theme_apply()
+ * swaps the whole set between the dark and light tables, and that file records
+ * which phone value each one came from. They are extern and mutable on purpose —
+ * they are the app's *current* theme rather than constants, which is exactly how
+ * marimo-android's Theme.java treats them, so no call site has to know a switch
+ * happened. */
 
 /* ---------------- geometry ---------------- */
 #define PAD 6
@@ -158,6 +153,18 @@ static pthread_mutex_t wave_lock = PTHREAD_MUTEX_INITIALIZER;
 static const char *status_idle = "";
 
 /* ---------------- small helpers ---------------- */
+
+/* A surface that sits directly on the artwork is translucent, as it is on the
+ * phone: ambient panels, row hovers and the selected row each have their own
+ * alpha. Blending is turned on around this one fill rather than globally, so
+ * text, borders and album art keep drawing exactly as they did. */
+static void fill_panel(SDL_Rect r, SDL_Color c, int alpha)
+{
+    SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(A.ren, c.r, c.g, c.b, (Uint8)alpha);
+    SDL_RenderFillRect(A.ren, &r);
+    SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_NONE);
+}
 
 static int inr(SDL_Rect r, int x, int y)
 {
@@ -577,9 +584,8 @@ static void draw_alpha(void)
     for (int i = 0; i < ALPHA_N; i++) {
         int y = A.L.alpha.y + i * nslot;
         if (i == hover_i) {
-            SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
             SDL_Rect hl = { A.L.alpha.x + 1, y, A.L.alpha.w - 2, nslot };
-            SDL_RenderFillRect(A.ren, &hl);
+            fill_panel(hl, C_BG2, theme_alpha_panel());
         }
         char c[4];
         if (i == ALPHA_N - 1)
@@ -677,8 +683,7 @@ static void draw_seek(double v, int enabled)
 static void draw_header(void)
 {
     SDL_Rect r = A.L.header;
-    SDL_SetRenderDrawColor(A.ren, C_BG1.r, C_BG1.g, C_BG1.b, 255);
-    SDL_RenderFillRect(A.ren, &r);
+    fill_panel(r, C_BG1, theme_alpha_panel());
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
     SDL_RenderDrawLine(A.ren, 0, r.y + r.h - 1, A.w, r.y + r.h - 1);
 
@@ -819,10 +824,8 @@ static void draw_tabs(void)
     int mx, my;
     SDL_GetMouseState(&mx, &my);
     for (int i = 0; i < 3; i++) {
-        if (inr(t[i], mx, my)) {
-            SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
-            SDL_RenderFillRect(A.ren, &t[i]);
-        }
+        if (inr(t[i], mx, my))
+            fill_panel(t[i], C_BG2, theme_alpha_panel());
         SDL_Color c = A.tab == i ? C_ACC : C_TXT;
         int w = font_w(&A.font, names[i], 1);
         draw_text(t[i].x + (t[i].w - w) / 2, t[i].y + 4, names[i], c, 1);
@@ -837,8 +840,7 @@ static void draw_tabs(void)
 static void draw_breadcrumb(void)
 {
     SDL_Rect r = A.L.breadcrumb;
-    SDL_SetRenderDrawColor(A.ren, C_BG1.r, C_BG1.g, C_BG1.b, 255);
-    SDL_RenderFillRect(A.ren, &r);
+    fill_panel(r, C_BG1, theme_alpha_panel());
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
     SDL_RenderDrawLine(A.ren, 0, r.y + r.h - 1, A.w, r.y + r.h - 1);
 
@@ -879,12 +881,17 @@ static void draw_list_rows(int tab)
         SDL_Rect row = { A.L.list.x, y, A.L.list.w, ROW_H };
         int sel = tab == 0 ? A.sel : A.q_sel;
         int hover = inr(row, mx, my);
+        /* Every row carries an ambient surface, exactly as the phone's rows do
+         * (Theme.rowBg — 0x662A2A30 dark, 0x80FFFFFF light). This is not
+         * decoration: in light mode it is the only thing putting a light surface
+         * under the text, and without it accent-coloured names land straight on
+         * the backdrop at about 1.3:1. Hover and selection then layer on top, the
+         * way a StateListDrawable does. */
+        fill_panel(row, C_ROW, theme_alpha_row());
         if (idx == sel) {
-            SDL_SetRenderDrawColor(A.ren, C_SELBG.r, C_SELBG.g, C_SELBG.b, 255);
-            SDL_RenderFillRect(A.ren, &row);
+            fill_panel(row, C_SELBG, theme_alpha_sel());
         } else if (hover) {
-            SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
-            SDL_RenderFillRect(A.ren, &row);
+            fill_panel(row, C_BG2, theme_alpha_panel());
         }
         SDL_Rect clip = row;
         clip.x += 2; clip.w -= 4;
@@ -990,8 +997,7 @@ static void recap_refresh(void)
 static SDL_Rect panel(SDL_Rect r)
 {
     SDL_Rect inner = { r.x + 8, r.y + 6, r.w - 16, r.h - 12 };
-    SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
-    SDL_RenderFillRect(A.ren, &r);
+    fill_panel(r, C_BG2, theme_alpha_panel());
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
     SDL_RenderDrawRect(A.ren, &r);
     return inner;
@@ -1360,10 +1366,10 @@ static void render(void)
         /* the backdrop wears the cover's colours, as on the phone, and drifts;
          * the panels and the accent stay fixed so text survives bright art. The
          * flat scrim is what shows for the first frame, before any noise exists. */
-        SDL_Color bg = palette_scrim(&A.pal, 1);
+        SDL_Color bg = palette_scrim(&A.pal, theme_is_dark());
         SDL_SetRenderDrawColor(A.ren, bg.r, bg.g, bg.b, 255);
         SDL_RenderClear(A.ren);
-        bg_frame(A.ren, &A.pal, 1, bg_time(), A.w, A.h);
+        bg_frame(A.ren, &A.pal, theme_is_dark(), bg_time(), A.w, A.h);
         bg_draw(A.ren, A.w, A.h);
     }
     draw_header();
@@ -2261,6 +2267,15 @@ static void handle_key(SDL_Event *ev)
                 player_stop(A.pl);
                 set_status("stopped");
             }
+        }
+        break;
+    case SDLK_d:
+        /* the settings screen grows a visible row for this later; until then the
+         * setting is a key and the config file, and it persists either way */
+        if (!(ev->key.keysym.mod & (KMOD_CTRL | KMOD_ALT))) {
+            cfg.dark = !cfg.dark;
+            theme_apply(cfg.dark);
+            set_status(cfg.dark ? "dark theme" : "light theme");
         }
         break;
     case SDLK_n:
@@ -3195,6 +3210,40 @@ static int selftest(const char *cfgfile_global)
         free(px);
     }
 
+    /* theme: both tables, and the round trip between them. The dark values are
+     * what this port has always drawn with, so they are pinned — a switch that
+     * fails to restore one channel would be invisible until it was everywhere. */
+    {
+        SDL_Color keep_bg1, keep_txt, keep_acc, keep_sel;
+        int ok = 1;
+
+        theme_apply(1);
+        keep_bg1 = C_BG1; keep_txt = C_TXT; keep_acc = C_ACC; keep_sel = C_SELBG;
+        if (keep_bg1.r != 0x15 || keep_bg1.g != 0x15 || keep_bg1.b != 0x18) ok = 0;
+        if (keep_txt.r != 0xC9 || keep_txt.g != 0xC9 || keep_txt.b != 0xD1) ok = 0;
+        if (keep_acc.r != 0x7D || keep_acc.g != 0xFF) ok = 0;      /* ACC_DARK */
+        if (keep_sel.g != 0x5C) ok = 0;
+        if (theme_alpha_panel() != 0xCC || theme_alpha_row() != 0x66 ||
+            theme_alpha_sel() != 0x8C) ok = 0;
+
+        theme_apply(0);
+        if (C_ACC.g != 0x52 || C_ACC.r != 0x0A) ok = 0;           /* darkened ACC_LIGHT */
+        if (C_TXT.r != 0x1B || C_TXT.b != 0x20) ok = 0;           /* Theme.txt() light */
+        if (C_BG1.r == keep_bg1.r && C_TXT.r == keep_txt.r && C_ACC.g == keep_acc.g) ok = 0;
+        if (theme_is_dark()) ok = 0;
+
+        theme_apply(1);
+        if (!theme_is_dark()) ok = 0;
+        if (C_BG1.r != keep_bg1.r || C_BG1.g != keep_bg1.g || C_BG1.b != keep_bg1.b ||
+            C_TXT.r != keep_txt.r || C_TXT.g != keep_txt.g || C_TXT.b != keep_txt.b ||
+            C_ACC.r != keep_acc.r || C_ACC.g != keep_acc.g || C_ACC.b != keep_acc.b ||
+            C_SELBG.r != keep_sel.r || C_SELBG.g != keep_sel.g || C_SELBG.b != keep_sel.b) ok = 0;
+
+        printf(ok ? "theme: light/dark tables ok, dark restores byte for byte\n"
+                  : "FAIL: theme tables\n");
+        if (!ok) fails++;
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3649,6 +3698,13 @@ int main(int argc, char **argv)
         copy_file_if_missing(cfgfile, oldcfg);
     }
     config_load(cfgfile);
+    /* The theme is config-backed (the phone keeps the same thing in prefs, under
+     * the key "dark"). MARIMO_THEME=light forces it for captures — and does so
+     * without touching cfg.dark, so a test run can never rewrite her setting. */
+    {
+        const char *tm = getenv("MARIMO_THEME");
+        theme_apply(tm ? (strcmp(tm, "light") ? 1 : 0) : cfg.dark);
+    }
     A.pal = palette_from_cover(NULL);   /* the blue fallback until a cover loads */
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);
 

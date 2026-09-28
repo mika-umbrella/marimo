@@ -104,3 +104,81 @@ SDL_Color palette_scrim(const Palette *p, int dark)
     if (dark) return mix(p->mid, rgb(0, 0, 0), 0x99 / 255.0);
     return mix(p->mid, rgb(255, 255, 255), 0x66 / 255.0);
 }
+
+/* ---------------- the mode table ---------------- */
+
+SDL_Color C_BG0   = { 0x0D, 0x0D, 0x0F, 255 };
+SDL_Color C_BG1   = { 0x15, 0x15, 0x18, 255 };
+SDL_Color C_BG2   = { 0x1E, 0x1E, 0x23, 255 };
+SDL_Color C_ROW   = { 0x2A, 0x2A, 0x30, 255 };
+SDL_Color C_BD    = { 0x2C, 0x2C, 0x33, 255 };
+SDL_Color C_TXT   = { 0xC9, 0xC9, 0xD1, 255 };
+SDL_Color C_DIM   = { 0x6B, 0x6B, 0x76, 255 };
+SDL_Color C_ACC   = { 0x7D, 0xFF, 0x7D, 255 };
+SDL_Color C_ACC2  = { 0xB7, 0x8C, 0xFF, 255 };
+SDL_Color C_ERR   = { 0xFF, 0x6B, 0x6B, 255 };
+SDL_Color C_SELBG = { 0x14, 0x5C, 0x14, 255 };
+SDL_Color C_AMBER = { 0xE8, 0xC3, 0x6A, 255 };
+
+static int g_dark = 1;
+static int g_a_panel = 0xCC, g_a_row = 0x66, g_a_sel = 0x8C;
+
+static void setc(SDL_Color *c, int r, int g, int b)
+{
+    c->r = (Uint8)r;
+    c->g = (Uint8)g;
+    c->b = (Uint8)b;
+    c->a = 255;
+}
+
+void theme_apply(int dark)
+{
+    g_dark = dark ? 1 : 0;
+    if (g_dark) {
+        /* the dark set is what this port has always drawn with — C_BG1/BG2 are
+         * these exact values, so flipping to light and back cannot drift, and
+         * txt/dim/acc agree with the phone byte for byte */
+        setc(&C_BG0, 0x0D, 0x0D, 0x0F);    /* opaque: the modal's field boxes */
+        setc(&C_BG1, 0x15, 0x15, 0x18);    /* Theme.panel()   dark 0xCC141418 (+1 unit) */
+        setc(&C_BG2, 0x1E, 0x1E, 0x23);    /* Theme.panelHi() dark 0xE0232329 (+1 unit) */
+        setc(&C_ROW, 0x2A, 0x2A, 0x30);    /* Theme.rowBg()   dark 0x662A2A30 */
+        /* borders stay opaque: the phone's dividers are 0x33 alpha, which a 1px
+         * line cannot afford — it would simply vanish */
+        setc(&C_BD,  0x2C, 0x2C, 0x33);
+        setc(&C_TXT, 0xC9, 0xC9, 0xD1);    /* = Theme.sub()  dark */
+        setc(&C_DIM, 0x6B, 0x6B, 0x76);    /* = Theme.dim()  dark */
+        setc(&C_ACC, 0x7D, 0xFF, 0x7D);    /* = Theme.ACC_DARK, winamp green */
+        setc(&C_ACC2, 0xB7, 0x8C, 0xFF);
+        setc(&C_ERR, 0xFF, 0x6B, 0x6B);
+        setc(&C_SELBG, 0x14, 0x5C, 0x14);  /* Theme.rowSel() dark 0x8C145C14 */
+        setc(&C_AMBER, 0xE8, 0xC3, 0x6A);
+        g_a_panel = 0xCC; g_a_row = 0x66; g_a_sel = 0x8C;
+    } else {
+        setc(&C_BG0, 0xFF, 0xFF, 0xFF);    /* a white field on a light panel */
+        setc(&C_BG1, 0xF2, 0xF0, 0xEE);    /* Theme.panel()   light 0xD9F2F0EE */
+        setc(&C_BG2, 0xE3, 0xE1, 0xDE);    /* Theme.panelHi() light 0xFFE3E1DE */
+        setc(&C_ROW, 0xFF, 0xFF, 0xFF);    /* Theme.rowBg()   light 0x80FFFFFF */
+        setc(&C_BD,  0xC9, 0xC7, 0xC4);
+        setc(&C_TXT, 0x1B, 0x1B, 0x20);    /* = Theme.txt()  light, ~10:1 on a row */
+        /* The four below are NOT the phone's light values, and the reason is
+         * measured: Theme.ACC_LIGHT (0x1E8A1E) renders about 1.4:1 against a
+         * light-mode row and amber about 1.6:1 — those colours are mid-luminance,
+         * so they work as a button fill or a tab underline on the phone but they
+         * cannot be read as filenames on a pale surface. These are the same hues,
+         * dark enough to clear ~3:1, which is the difference between a light theme
+         * and a light theme nobody can use. */
+        setc(&C_DIM, 0x4A, 0x4A, 0x52);    /* Theme.dim() light 0x6E6E76 measures 2:1 here */
+        setc(&C_ACC, 0x0A, 0x52, 0x0A);
+        setc(&C_ACC2, 0x4A, 0x2C, 0x86);
+        setc(&C_ERR, 0xC0, 0x39, 0x2B);
+        setc(&C_SELBG, 0xB9, 0xE8, 0xB9);  /* a pale wash: dark green text on the
+                                            * phone's own 0x9928B928 would vanish */
+        setc(&C_AMBER, 0x5E, 0x3C, 0x00);
+        g_a_panel = 0xD9; g_a_row = 0x80; g_a_sel = 0x99;
+    }
+}
+
+int theme_is_dark(void)     { return g_dark; }
+int theme_alpha_panel(void) { return g_a_panel; }
+int theme_alpha_row(void)   { return g_a_row; }
+int theme_alpha_sel(void)   { return g_a_sel; }

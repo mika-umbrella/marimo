@@ -37,4 +37,31 @@ Palette palette_from_surface(SDL_Surface *s);
  * before the perlin is layered on. Dark scrim 0x99 black, light 0x66 white. */
 SDL_Color palette_scrim(const Palette *p, int dark);
 
+/* ---- the mode table ---- */
+
+/* The rest of the colours live here rather than in main.c because they are
+ * mode-dependent: theme_apply() swaps the whole set between the dark and the
+ * light table, exactly as marimo-android's Theme.java does. (The phone splits
+ * these across Theme.java and BgManager.java; same division, one file here.)
+ *
+ * They are deliberately *not* const: they are global current state, which is how
+ * the phone treats them too, so every call site keeps naming its colour and
+ * nothing has to know that a switch happened.
+ *
+ * The dark table is what this port has always drawn with — its C_TXT, C_DIM and
+ * C_ACC are byte-identical to Theme.sub(), Theme.dim() and Theme.ACC_DARK, so the
+ * two apps agree on the dark look and only the light one is new. */
+extern SDL_Color C_BG0, C_BG1, C_BG2, C_BD, C_TXT, C_DIM, C_ACC, C_ACC2, C_ERR,
+                 C_SELBG, C_AMBER, C_ROW;
+
+void theme_apply(int dark);
+int theme_is_dark(void);
+
+/* alphas for the surfaces that sit directly on the art — the phone uses three
+ * different ones and all three are visible: ambient surfaces, row hovers, and
+ * the selected row. Everything else stays opaque. */
+int theme_alpha_panel(void);
+int theme_alpha_row(void);
+int theme_alpha_sel(void);
+
 #endif /* MARIMO_THEME_H */
