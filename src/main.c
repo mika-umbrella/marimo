@@ -48,7 +48,7 @@
 #include "libcache.h"
 #include <mpv/client.h>
 
-#define APP_VER "1.3"
+#define APP_VER "1.4"
 
 /* ---------------- palette ---------------- */
 /* The colours live in src/theme.c, because they are mode-dependent: theme_apply()
