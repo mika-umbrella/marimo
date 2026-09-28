@@ -42,6 +42,7 @@
 #include "history.h"
 #include "recap.h"
 #include "waveform.h"
+#include "theme.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -131,6 +132,10 @@ typedef struct {
     char wave_pub_path[Q_PATH_MAX];
     char wave_cur[Q_PATH_MAX];
     char wave_shown[Q_PATH_MAX];
+    /* the cover-derived palette, and the album dir it was sampled from — so the
+     * sampling happens once per album, not per frame */
+    Palette pal;
+    char art_dir[Q_PATH_MAX];
     /* modal */
     int modal, m_focus;
     char m_fields[4][512];
@@ -1341,8 +1346,13 @@ static void draw_modal(void)
 static void render(void)
 {
     A.tip = 0;
-    SDL_SetRenderDrawColor(A.ren, C_BG1.r, C_BG1.g, C_BG1.b, 255);
-    SDL_RenderClear(A.ren);
+    {
+        /* the backdrop wears the cover's colours, as on the phone; the panels and
+         * the accent stay fixed so text survives a bright album cover */
+        SDL_Color bg = palette_scrim(&A.pal, 1);
+        SDL_SetRenderDrawColor(A.ren, bg.r, bg.g, bg.b, 255);
+        SDL_RenderClear(A.ren);
+    }
     draw_header();
     draw_playerbar();
     if (!A.mini) {
@@ -1875,6 +1885,37 @@ static void wave_poll(void)
             pthread_detach(A.wave_thr);
         }
     }
+}
+
+/* ---------------- look (art + palette) ---------------- */
+
+/* Per frame: keep the art and the palette on the album the player bar is showing.
+ * Keyed on the album dir so the cover is sampled once per album rather than per
+ * frame, and so a restored queue — where play_index never ran — still gets both.
+ * Sampling is ~4000 pixels of a decoded cover, which is nothing, but it is still
+ * not something to do sixty times a second. */
+static void look_poll(void)
+{
+    char dir[Q_PATH_MAX], cov[1024];
+    char *slash;
+
+    q_lock(&A.q);
+    if (A.q.cur >= 0 && A.q.cur < A.q.n)
+        snprintf(dir, sizeof dir, "%s", A.q.items[A.q.cur].path);
+    else
+        dir[0] = 0;
+    q_unlock(&A.q);
+
+    slash = strrchr(dir, '/');
+    if (slash) *slash = 0;
+    if (strcmp(dir, A.art_dir) == 0) return;
+    snprintf(A.art_dir, sizeof A.art_dir, "%s", dir);
+
+    /* Embedded art is not sampled (the folder cover is what this library has,
+     * and the phone prefers it too); no cover means the blue fallback, which is
+     * itself the honest signal that nothing was sampled. */
+    A.pal = palette_from_cover(lib_find_cover(dir, cov, sizeof cov) == 0 ? cov : NULL);
+    if (!A.art) load_art();
 }
 
 /* ---------------- events ---------------- */
@@ -2993,6 +3034,65 @@ static int selftest(const char *cfgfile_global)
         }
     }
 
+    /* palette: the buckets exactly, then the blue fallback contract. The phone's
+     * BgManager decides "is art loading?" by whether the backdrop is neutral
+     * blue, so that triple is load-bearing and gets locked down here.
+     *   MARIMO_PALETTE_CHECK="/path/cover.jpg" ./build/marimo --selftest  */
+    {
+        /* three solid bands: a light grey, a mid grey and a dark one. Every
+         * sample lands in a known bucket, so the averages are exact — which no
+         * real cover can ever be. */
+        SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 99, 99, 32, SDL_PIXELFORMAT_ARGB8888);
+        if (!s) {
+            printf("FAIL: palette test surface\n");
+            fails++;
+        } else {
+            Palette p;
+            int x, y;
+            SDL_LockSurface(s);
+            for (y = 0; y < s->h; y++) {
+                Uint32 *row = (Uint32 *)((Uint8 *)s->pixels + (size_t)y * s->pitch);
+                int v = y < 33 ? 0xC0 : y < 66 ? 0x80 : 0x20;
+                for (x = 0; x < s->w; x++)
+                    row[x] = 0xFF000000u | ((Uint32)v << 16) | ((Uint32)v << 8) | (Uint32)v;
+            }
+            p = palette_from_surface(s);
+            SDL_UnlockSurface(s);
+            SDL_FreeSurface(s);
+            if (!p.from_art || p.light.r != 0xC0 || p.mid.r != 0x80 || p.dark.r != 0x20) {
+                printf("FAIL: palette buckets gave %02X/%02X/%02X (want C0/80/20)\n",
+                       p.light.r, p.mid.r, p.dark.r);
+                fails++;
+            } else {
+                printf("palette: buckets ok (C0/80/20 by luma)\n");
+            }
+        }
+        {
+            Palette f = palette_from_cover(NULL);
+            if (f.from_art || f.light.r != 0x3A || f.mid.b != 0x38 || f.dark.b != 0x14
+                || !(f.dark.r < f.dark.g && f.dark.g < f.dark.b)) {
+                printf("FAIL: palette fallback is not the strictly-blue triple\n");
+                fails++;
+            } else {
+                printf("palette: fallback ok (%02X%02X%02X / %02X%02X%02X / %02X%02X%02X)\n",
+                       f.light.r, f.light.g, f.light.b, f.mid.r, f.mid.g, f.mid.b,
+                       f.dark.r, f.dark.g, f.dark.b);
+            }
+        }
+    }
+
+    if (getenv("MARIMO_PALETTE_CHECK")) {
+        Palette p = palette_from_cover(getenv("MARIMO_PALETTE_CHECK"));
+        printf("palette: %s -> light %02X%02X%02X mid %02X%02X%02X dark %02X%02X%02X (from_art %d)\n",
+               getenv("MARIMO_PALETTE_CHECK"),
+               p.light.r, p.light.g, p.light.b, p.mid.r, p.mid.g, p.mid.b,
+               p.dark.r, p.dark.g, p.dark.b, p.from_art);
+        if (!p.from_art) {
+            printf("FAIL: palette could not read the cover\n");
+            fails++;
+        }
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3359,6 +3459,7 @@ static int screenshot(const char *out)
 {
     int rc;
     SDL_Surface *surf;
+    look_poll();   /* art + palette for the captured track, same reason */
     wave_sync();   /* deterministic capture: decode now rather than mid-frame */
     /* let the window map on wayland before grabbing pixels */
     for (int i = 0; i < 24; i++) {
@@ -3446,6 +3547,7 @@ int main(int argc, char **argv)
         copy_file_if_missing(cfgfile, oldcfg);
     }
     config_load(cfgfile);
+    A.pal = palette_from_cover(NULL);   /* the blue fallback until a cover loads */
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);
 
     /* which pane to open on: 0 library (default), 1 queue, 2 recap. Exists so
@@ -3639,6 +3741,7 @@ int main(int argc, char **argv)
             }
         }
         wave_poll();
+        look_poll();
 
         /* embedded art retry (metadata can lag) */
         if (A.art_retry > 0 && !A.art) {
