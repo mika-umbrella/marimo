@@ -351,9 +351,10 @@ static int thumb_from_surface(SDL_Surface *conv, int size, unsigned char *out)
 }
 
 /* The album's first audio file, or 0. Every track in an album carries the same
- * embedded picture, so the first one is as good as any — and this only runs for
- * albums that have no cover *file*, so it costs nothing for the other 600. */
-static int first_audio(const char *dir, char *out, size_t n)
+ * embedded picture, so the first one is as good as any. Exported because main.c's
+ * palette sampling needs the same "which file holds this album's art" answer that
+ * the thumbnails do. */
+int album_first_audio(const char *dir, char *out, size_t n)
 {
     LibEntry *e = NULL;
     int ns = lib_scan(dir, &e), i, found = 0;
@@ -397,7 +398,7 @@ static int thumb_decode(const char *dir, int size, unsigned char *out)
 
     if (lib_find_cover(dir, cov, sizeof cov) == 0 && cov[0])
         raw = IMG_Load(cov);
-    if (!raw && first_audio(dir, track, sizeof track)) {
+    if (!raw && album_first_audio(dir, track, sizeof track)) {
         unsigned char *art = NULL;
         size_t len = 0;
         if (tag_read_art(track, &art, &len) == 0 && art && len) {
