@@ -24,6 +24,7 @@ typedef struct {
     Meta meta;
     int scrobbled;   /* scrobble already submitted for this listen */
     int np_sent;     /* now-playing already sent */
+    int diary_logged;/* listening diary already has this listen */
 } QItem;
 
 typedef struct {

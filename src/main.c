@@ -38,6 +38,7 @@
 #include "tags.h"
 #include "mpris.h"
 #include "fs.h"
+#include "history.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -1027,6 +1028,50 @@ static void threshold_check(void)
     }
 }
 
+/* One diary line per finished listen — the raw material for the recap.
+ *
+ * Called at the *transitions* only (track change, end of track, stop, quit).
+ * It is deliberately NOT called from the per-frame threshold_check(): the flag
+ * would then be set on the first frame and every track would be logged at zero
+ * seconds. The flag makes it idempotent, exactly like `scrobbled`, so a
+ * transition that fires more than once still writes one line. */
+static void diary_flush(void)
+{
+    QItem *it;
+    Meta m;
+    char nm[Q_NAME_MAX];
+    int cur;
+    double len, t;
+    long long dur_ms;
+
+    q_lock(&A.q);
+    if (A.q.cur < 0 || A.q.cur >= A.q.n) { q_unlock(&A.q); return; }
+    it = &A.q.items[A.q.cur];
+    if (it->diary_logged) { q_unlock(&A.q); return; }
+    m = it->meta;
+    snprintf(nm, sizeof nm, "%s", it->name);   /* copied: the array can move */
+    cur = A.q.cur;
+    q_unlock(&A.q);
+
+    /* At a gapless transition mpv has already moved on to the preloaded next
+     * entry, so the *live* position/length at this moment belong to the wrong
+     * track (that's what made the first run log sec=0 dur=0). Use the position
+     * the app was last showing — A.last_time, refreshed every frame in render()
+     * — and take the duration from the tags, which is what the phone does too. */
+    len = player_length(A.pl);
+    t = player_time(A.pl);
+    if (t < 0) t = 0;
+    if (A.last_time > t) t = A.last_time;
+    dur_ms = m.duration_ms > 0 ? (long long)m.duration_ms
+                               : (len > 0 ? (long long)(len * 1000.0) : 0);
+    history_log(m.artist, m.album, m.title[0] ? m.title : nm,
+                (long long)(t * 1000.0), dur_ms);
+
+    q_lock(&A.q);
+    if (A.q.cur == cur) A.q.items[cur].diary_logged = 1;
+    q_unlock(&A.q);
+}
+
 static void load_art(void)
 {
     char dir[L_PATH_MAX], cov[1024], path[Q_PATH_MAX];
@@ -1063,6 +1108,7 @@ static void play_index(int i)
     char path[Q_PATH_MAX], name[Q_NAME_MAX];
     QItem *it;
     Meta meta;
+    diary_flush();                    /* the outgoing listen, before the switch */
     q_lock(&A.q);
     if (i < 0 || i >= A.q.n) { q_unlock(&A.q); return; }
     A.q.cur = i;
@@ -1110,6 +1156,7 @@ static void play_index(int i)
         A.q.items[i].meta = meta;
         A.q.items[i].scrobbled = 0;
         A.q.items[i].np_sent = 0;
+        A.q.items[i].diary_logged = 0;   /* a replay is a listen too */
     }
     q_unlock(&A.q);
     A.last_meta = meta;
@@ -1126,6 +1173,7 @@ static void play_index(int i)
 static void on_end(int err)
 {
     int next;
+    diary_flush();                    /* the track that just finished */
     threshold_check();
     if (err == 2) {
         /* the entry failed — skip it explicitly */
@@ -1157,6 +1205,7 @@ static void on_end(int err)
             snprintf(name, sizeof name, "%s", it->meta.title[0] ? it->meta.title : it->name);
             it->scrobbled = 0;
             it->np_sent = 0;
+            it->diary_logged = 0;
             if (tag_read_meta(it->path, &meta) != 0)
                 memset(&meta, 0, sizeof meta);
         }
@@ -1535,6 +1584,7 @@ static void poll_refresh(void)
 static void next_track(void)
 {
     int n;
+    diary_flush();
     threshold_check();
     if (A.q.cur < 0) n = A.q.n > 0 ? 0 : -1;
     else n = q_next(&A.q);
@@ -1544,6 +1594,7 @@ static void next_track(void)
 static void prev_track(void)
 {
     int n;
+    diary_flush();
     threshold_check();
     n = q_prev(&A.q);
     if (n >= 0) play_index(n);
@@ -1551,6 +1602,7 @@ static void prev_track(void)
 
 static void stop_playback(void)
 {
+    diary_flush();
     threshold_check();
     player_stop(A.pl);
     q_lock(&A.q);
@@ -2069,6 +2121,69 @@ static int selftest(const char *cfgfile_global)
         config_load(cfgfile_global);   /* restore real settings */
     }
 
+    /* listening diary: escaping, disk round-trip, tolerant parse */
+    {
+        const char *d = "/tmp/marimo_selftest_diary";
+        char jp[256];
+        HistoryEntry *ev;
+        size_t n = 0;
+        int ok = 1;
+
+        snprintf(jp, sizeof jp, "%s/history.jsonl", d);
+        remove(jp);
+        history_init(d);
+        /* quotes, a backslash, a real newline and a tab all have to survive */
+        history_log("Say \"hi\"\\there", "Album\nTwo", "Tab\tTitle", 42000, 180000);
+        history_log("artist2", "album2", "title2", 1000, 60000);
+
+        ev = history_window(0, 4102444800000LL, &n);   /* 1970 -> 2100 */
+        if (n != 2) {
+            printf("FAIL: diary entries %zu (want 2)\n", n);
+            fails++;
+        } else {
+            if (strcmp(ev[0].artist, "Say \"hi\"\\there") || strcmp(ev[0].album, "Album\nTwo") ||
+                strcmp(ev[0].title, "Tab\tTitle")) {
+                printf("FAIL: diary escaping [%s] [%s]\n", ev[0].artist, ev[0].title);
+                ok = 0;
+            }
+            if (ev[0].sec != 42 || ev[0].dur != 180000 || ev[1].sec != 1 || ev[1].dur != 60000) {
+                printf("FAIL: diary sec/dur %lld/%lld %lld/%lld\n",
+                       ev[0].sec, ev[0].dur, ev[1].sec, ev[1].dur);
+                ok = 0;
+            }
+            if (ev[0].ts < 1600000000000LL) { printf("FAIL: diary ts %lld\n", ev[0].ts); ok = 0; }
+            if (strcmp(ev[1].artist, "artist2") || strcmp(ev[1].title, "title2")) {
+                printf("FAIL: diary second entry\n");
+                ok = 0;
+            }
+        }
+        history_free(ev);
+
+        /* a truncated line and outright junk must be skipped, not fatal */
+        {
+            FILE *f = fopen(jp, "ab");
+            if (f) {
+                fprintf(f, "{\"ts\":123,\"artist\":\"broken\n");
+                fprintf(f, "not json at all\n");
+                fclose(f);
+            }
+        }
+        ev = history_window(0, 4102444800000LL, &n);
+        if (n != 2) { printf("FAIL: diary tolerant parse got %zu\n", n); ok = 0; }
+        history_free(ev);
+
+        /* the window filter itself */
+        ev = history_window(0, 1, &n);
+        if (n != 0) { printf("FAIL: diary window filter got %zu\n", n); ok = 0; }
+        history_free(ev);
+
+        remove(jp);
+        rmdir(d);
+        history_shutdown();
+        if (ok) printf("diary: ok\n");
+        else fails++;
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -2250,6 +2365,7 @@ static int headless(const char *dir)
     t1 = (int)time(NULL);
     while (A.q.cur != 1 && time(NULL) - t1 < 10) {
         int pe = player_poll(A.pl);
+        { double pt = player_time(A.pl); if (pt >= 0) A.last_time = pt; }  /* render() does this in the real loop */
         if (pe) on_end(pe);
         SDL_Delay(20);
     }
@@ -2281,6 +2397,7 @@ static int headless(const char *dir)
     t1 = (int)time(NULL);
     while (A.q.cur != 2 && time(NULL) - t1 < 10) {
         int pe = player_poll(A.pl);
+        { double pt = player_time(A.pl); if (pt >= 0) A.last_time = pt; }
         if (pe) on_end(pe);
         SDL_Delay(20);
     }
@@ -2307,6 +2424,7 @@ static int headless(const char *dir)
     t1 = (int)time(NULL);
     while (A.q.cur >= 0 && time(NULL) - t1 < 10) {
         int pe = player_poll(A.pl);
+        { double pt = player_time(A.pl); if (pt >= 0) A.last_time = pt; }
         if (pe) on_end(pe);
         SDL_Delay(20);
     }
@@ -2518,6 +2636,18 @@ int main(int argc, char **argv)
     }
     config_load(cfgfile);
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);
+
+    /* the listening diary lives with the config, and has to be set up before the
+     * --selftest/--headless dispatches below so those modes log too.
+     * MARIMO_DIARY_DIR overrides it, so test runs don't write into the real
+     * diary and pollute the recap. */
+    {
+        char diarydir[1100];
+        const char *dd = getenv("MARIMO_DIARY_DIR");
+        if (dd && dd[0]) snprintf(diarydir, sizeof diarydir, "%s", dd);
+        else snprintf(diarydir, sizeof diarydir, "%s/.config/marimo", home);
+        history_init(diarydir);
+    }
     srand((unsigned)(time(NULL) ^ ((unsigned)getpid() << 16)));
 
     if (do_selftest) return selftest(cfgfile);
@@ -2738,6 +2868,7 @@ int main(int argc, char **argv)
     }
 
     /* quit */
+    diary_flush();
     threshold_check();
     cfg.volume = A.vol;
     cfg.shuffle = A.q.shuffle;
