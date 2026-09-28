@@ -26,7 +26,7 @@
 #include <math.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <dirent.h>
+#include "dirwin.h"
 #include <strings.h>
 
 #include "font.h"
@@ -3457,25 +3457,25 @@ static int selftest(const char *cfgfile_global)
 
     if (getenv("MARIMO_WAVE_CHECK")) {
         const char *dir = getenv("MARIMO_WAVE_CHECK");
-        DIR *d = opendir(dir);
+        MD_DIR *d = md_opendir(dir);
         if (!d) {
             printf("waveform: %s not accessible — skipping the generator comparison\n", dir);
         } else {
-            struct dirent *de;
+            const char *nm;
             int n = 0, exact = 0, absent = 0, worst = 0;
-            while ((de = readdir(d)) != NULL) {
-                const char *dot = strrchr(de->d_name, '.');
+            while ((nm = md_readdir(d)) != NULL) {
+                const char *dot = strrchr(nm, '.');
                 char path[Q_PATH_MAX];
                 unsigned char mine[WAVE_BUCKETS], theirs[WAVE_BUCKETS];
                 int k;
-                if (de->d_name[0] == '.' || !dot) continue;
+                if (nm[0] == '.' || !dot) continue;
                 if (strcasecmp(dot, ".flac") && strcasecmp(dot, ".mp3") &&
                     strcasecmp(dot, ".m4a") && strcasecmp(dot, ".opus") &&
                     strcasecmp(dot, ".ogg") && strcasecmp(dot, ".wav")) continue;
-                if (!wave_sidecar_read(dir, de->d_name, theirs)) { absent++; continue; }
-                snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+                if (!wave_sidecar_read(dir, nm, theirs)) { absent++; continue; }
+                snprintf(path, sizeof path, "%s/%s", dir, nm);
                 if (!wave_decode(path, mine)) {          /* no cache: a real decode */
-                    printf("FAIL: waveform could not decode %s\n", de->d_name);
+                    printf("FAIL: waveform could not decode %s\n", nm);
                     fails++;
                     continue;
                 }
@@ -3487,7 +3487,7 @@ static int selftest(const char *cfgfile_global)
                 }
                 if (memcmp(mine, theirs, WAVE_BUCKETS) == 0) exact++;
             }
-            closedir(d);
+            md_closedir(d);
             printf("waveform: %d/%d decoded files match the generator exactly "
                    "(max delta %d, %d files not in the sidecar)\n", exact, n, worst, absent);
             if (n == 0) printf("waveform: nothing in %s to compare against\n", dir);
@@ -3878,34 +3878,34 @@ static int selftest(const char *cfgfile_global)
      *   MARIMO_COVER_CHECK="$HOME/Music" ./build/marimo --selftest */
     if (getenv("MARIMO_COVER_CHECK")) {
         const char *root = getenv("MARIMO_COVER_CHECK");
-        DIR *d = opendir(root);
+        MD_DIR *d = md_opendir(root);
         if (!d) {
             printf("cover census: %s not accessible\n", root);
         } else {
-            struct dirent *de;
+            const char *nm;
             int albums = 0, lone = 0, none = 0, ranks[6] = { 0, 0, 0, 0, 0, 0 };
-            while ((de = readdir(d)) != NULL) {
+            while ((nm = md_readdir(d)) != NULL) {
                 char path[L_PATH_MAX], cov[1024];
                 struct stat st;
-                if (de->d_name[0] == '.') continue;
-                snprintf(path, sizeof path, "%s/%s", root, de->d_name);
-                if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                if (nm[0] == '.') continue;
+                snprintf(path, sizeof path, "%s/%s", root, nm);
+                if (fs_stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
                 albums++;
                 if (lib_find_cover(path, cov, sizeof cov) != 0) { none++; continue; }
                 {
                     const char *base = strrchr(cov, '/');
                     int r;
                     base = base ? base + 1 : cov;
-                    r = cover_rank(base, de->d_name);
+                    r = cover_rank(base, nm);
                     if (r >= 0 && r < 6) {
                         ranks[r]++;
                     } else {
                         lone++;
-                        printf("cover census: lone  %-38.38s -> %s\n", de->d_name, base);
+                        printf("cover census: lone  %-38.38s -> %s\n", nm, base);
                     }
                 }
             }
-            closedir(d);
+            md_closedir(d);
             printf("cover census: %d albums — cover %d, folder %d, front %d, album %d, "
                    "cover* %d, artist-album %d, lone %d, none %d\n",
                    albums, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4], ranks[5],

@@ -5,8 +5,7 @@
 #include "libcache.h"
 #include "fs.h"
 #include "library.h"
-
-#include <dirent.h>
+#include "dirwin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,33 +57,33 @@ static Row *row_add(const char *dir)
  * but its subfolders do, that folder IS the album. Never deeper than one level. */
 static int count_audio_at(const char *dir, int descend)
 {
-    DIR *d = opendir(dir);
-    struct dirent *de;
+    MD_DIR *d = md_opendir(dir);
+    const char *nm;
     int n = 0;
 
     if (!d) return -1;
-    while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        if (lib_is_audio(de->d_name)) n++;
+    while ((nm = md_readdir(d)) != NULL) {
+        if (nm[0] == '.') continue;
+        if (lib_is_audio(nm)) n++;
     }
     if (n > 0 || !descend) {
-        closedir(d);
+        md_closedir(d);
         return n;
     }
     /* nothing of its own: ask the immediate subfolders, and only them */
-    rewinddir(d);
-    while ((de = readdir(d)) != NULL) {
+    md_rewinddir(d);
+    while ((nm = md_readdir(d)) != NULL) {
         char sub[1024];
         struct stat st;
-        if (de->d_name[0] == '.') continue;
-        snprintf(sub, sizeof sub, "%s/%s", dir, de->d_name);
-        if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        if (nm[0] == '.') continue;
+        snprintf(sub, sizeof sub, "%s/%s", dir, nm);
+        if (fs_stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         {
             int m = count_audio_at(sub, 0);
             if (m > 0) n += m;
         }
     }
-    closedir(d);
+    md_closedir(d);
     return n;
 }
 
@@ -99,7 +98,10 @@ int libcache_tracks(const char *dir)
     Row *r;
 
     if (!dir || !*dir) return -1;
-    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+    /* fs_stat, not stat: this is the guard *before* the folder is opened, and the
+     * ANSI stat fails on every non-ascii path on windows — which is how the album
+     * still looked empty after the listing itself had been made wide. */
+    if (fs_stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
     r = row_for(dir);
     /* unchanged since we counted it: that is the whole point of the cache */
     if (r && r->mtime == (long long)st.st_mtime && r->tracks >= 0) {

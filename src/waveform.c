@@ -316,7 +316,7 @@ static int cache_path_for(const char *path, char *out, size_t n)
     const char *base = getenv("XDG_CACHE_HOME");
     char key[1024];
     struct stat st;
-    if (stat(path, &st) != 0) return 0;
+    if (fs_stat(path, &st) != 0) return 0;
     if (!base || !*base) {
         const char *home = getenv("HOME");
         if (!home || !*home) return 0;
