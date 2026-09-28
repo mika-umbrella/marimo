@@ -160,21 +160,31 @@ void theme_apply(int dark)
         setc(&C_ROW, 0xFF, 0xFF, 0xFF);    /* Theme.rowBg()   light 0x80FFFFFF */
         setc(&C_BD,  0xC9, 0xC7, 0xC4);
         setc(&C_TXT, 0x1B, 0x1B, 0x20);    /* = Theme.txt()  light, ~10:1 on a row */
-        /* The four below are NOT the phone's light values, and the reason is
-         * measured: Theme.ACC_LIGHT (0x1E8A1E) renders about 1.4:1 against a
-         * light-mode row and amber about 1.6:1 — those colours are mid-luminance,
-         * so they work as a button fill or a tab underline on the phone but they
-         * cannot be read as filenames on a pale surface. These are the same hues,
-         * dark enough to clear ~3:1, which is the difference between a light theme
-         * and a light theme nobody can use. */
-        setc(&C_DIM, 0x4A, 0x4A, 0x52);    /* Theme.dim() light 0x6E6E76 measures 2:1 here */
-        setc(&C_ACC, 0x0A, 0x52, 0x0A);
-        setc(&C_ACC2, 0x4A, 0x2C, 0x86);
+        /* The four below are NOT the phone's light values. The reason is measured:
+         * Theme.ACC_LIGHT (0x1E8A1E) renders about 1.4:1 as filename text on a
+         * light row, and amber about 1.6:1 — mid-luminance colours, which work as
+         * a button fill or a tab underline but not as filenames.
+         *
+         * The first attempt at this over-corrected into 0x0A520A and nova called
+         * it: a green that dark is nearly indistinguishable from the grey text,
+         * because luminance contrast is the wrong yardstick for an *accent*.
+         * Chroma is — how far the colour sits from grey — so these keep a real
+         * hue (green 95, amber 138) and take what contrast the lighter row
+         * surface can give them (~2:1, i.e. legible while still obviously green).
+         * Do not simply darken these again. */
+        setc(&C_DIM, 0x4A, 0x4A, 0x52);    /* neutral grey, on purpose: it must not
+                                            * read as an accent. Theme.dim() light
+                                            * (0x6E6E76) measures only 2:1 here. */
+        setc(&C_ACC, 0x1B, 0x7A, 0x1B);    /* chroma 95 */
+        setc(&C_ACC2, 0x5B, 0x2F, 0xA8);   /* chroma 121 */
         setc(&C_ERR, 0xC0, 0x39, 0x2B);
         setc(&C_SELBG, 0xB9, 0xE8, 0xB9);  /* a pale wash: dark green text on the
                                             * phone's own 0x9928B928 would vanish */
-        setc(&C_AMBER, 0x5E, 0x3C, 0x00);
-        g_a_panel = 0xD9; g_a_row = 0x80; g_a_sel = 0x99;
+        setc(&C_AMBER, 0x8A, 0x56, 0x00);  /* chroma 138 */
+        /* rows a shade lighter than the phone's 0x80 white: in light mode the
+         * surface is what gives the accents their contrast, and a row that reads
+         * as a surface is the whole point of the ambient fill */
+        g_a_panel = 0xD9; g_a_row = 0xC0; g_a_sel = 0x99;
     }
 }
 

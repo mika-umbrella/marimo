@@ -3227,7 +3227,7 @@ static int selftest(const char *cfgfile_global)
             theme_alpha_sel() != 0x8C) ok = 0;
 
         theme_apply(0);
-        if (C_ACC.g != 0x52 || C_ACC.r != 0x0A) ok = 0;           /* darkened ACC_LIGHT */
+        if (C_ACC.g != 0x7A || C_ACC.r != 0x1B) ok = 0;           /* chromatic light green */
         if (C_TXT.r != 0x1B || C_TXT.b != 0x20) ok = 0;           /* Theme.txt() light */
         if (C_BG1.r == keep_bg1.r && C_TXT.r == keep_txt.r && C_ACC.g == keep_acc.g) ok = 0;
         if (theme_is_dark()) ok = 0;
