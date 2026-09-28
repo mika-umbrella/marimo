@@ -45,6 +45,7 @@
 #include "theme.h"
 #include "bg.h"
 #include "album.h"
+#include "libcache.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -150,6 +151,7 @@ typedef struct {
 static App A;
 /* guards the wave_pub* / wave_running handoff only — never held across a decode */
 static pthread_mutex_t wave_lock = PTHREAD_MUTEX_INITIALIZER;
+static int cache_announced;      /* the library-cache line is said once per run */
 
 static const char *status_idle = "";
 
@@ -865,9 +867,20 @@ static void draw_breadcrumb(void)
             if (A.entries[i].kind == L_DIR) dirs++;
             else if (A.entries[i].kind == L_FILE) files++;
         }
-        if (dirs && files)      snprintf(summary, sizeof summary, "%d albums \xc2\xb7 %d tracks", dirs, files);
-        else if (dirs)          snprintf(summary, sizeof summary, "%d albums", dirs);
-        else if (files)         snprintf(summary, sizeof summary, "%d tracks", files);
+        /* At the library root the cache knows the real totals, including the track
+         * count that counting the entries cannot give (the tracks are one level
+         * down, and asking 632 folders over CIFS to total them is exactly what the
+         * cache is for). Until the walk has finished, say only what is free. */
+        if (!strcmp(A.cur_dir, cfg.music_dir) && libcache_cached(cfg.music_dir)) {
+            snprintf(summary, sizeof summary, "%d albums \xc2\xb7 %lld tracks",
+                     libcache_albums(cfg.music_dir), libcache_total_tracks(cfg.music_dir));
+        } else if (dirs && files) {
+            snprintf(summary, sizeof summary, "%d albums \xc2\xb7 %d tracks", dirs, files);
+        } else if (dirs) {
+            snprintf(summary, sizeof summary, "%d albums", dirs);
+        } else if (files) {
+            snprintf(summary, sizeof summary, "%d tracks", files);
+        }
         sumw = summary[0] ? font_w(&A.font, summary, 1) + 10 : 0;
         if (summary[0]) draw_text(r.x + r.w - sumw + 4, r.y + 2, summary, C_DIM, 1);
 
@@ -3510,6 +3523,56 @@ static int selftest(const char *cfgfile_global)
         }
     }
 
+    /* library cache: the incremental claim, tested rather than asserted. The
+     * shape is "count once, then read it back without opening the folder" — the
+     * counters make that observable, so this fails if the cache ever quietly
+     * starts re-opening everything. */
+    {
+        int more, guard = 0, albums;
+        long long total;
+        do {
+            more = libcache_step(cfg.music_dir, 200);
+            guard++;
+        } while (more && guard < 500);
+        total = libcache_total_tracks(cfg.music_dir);
+        albums = libcache_albums(cfg.music_dir);
+        {
+            int scanned = 0, reused = 0;
+            libcache_last_walk(&scanned, &reused);
+            printf("libcache: %d folders (%d counted, %d reused on this pass), %lld tracks\n",
+                   albums, scanned, reused, total);
+        }
+        if (!libcache_cached(cfg.music_dir) || albums <= 0 || total <= 0) {
+            printf("FAIL: library cache did not complete (%d albums, %lld tracks)\n", albums, total);
+            fails++;
+        }
+        {
+            char first[L_PATH_MAX] = "";
+            LibEntry *e = NULL;
+            int n = lib_scan(cfg.music_dir, &e), i;
+            for (i = 0; i < n && !first[0]; i++)
+                if (e[i].kind == L_DIR && strcmp(e[i].name, ".."))
+                    snprintf(first, sizeof first, "%s", e[i].path);
+            lib_free_entries(e);
+            if (!first[0]) {
+                printf("libcache: no folder to check\n");
+            } else {
+                int t1, t2, s1 = 0, r1 = 0, s2 = 0, r2 = 0;
+                t1 = libcache_tracks(first);
+                libcache_last_walk(&s1, &r1);
+                t2 = libcache_tracks(first);          /* this one MUST be a reuse */
+                libcache_last_walk(&s2, &r2);
+                if (t1 != t2 || t1 < 0 || s2 != s1 || r2 != r1 + 1) {
+                    printf("FAIL: library cache did not reuse (%d/%d tracks, counted %d->%d, reused %d->%d)\n",
+                           t1, t2, s1, s2, r1, r2);
+                    fails++;
+                } else {
+                    printf("libcache: \"%s\" = %d tracks, second read reused it\n", first, t2);
+                }
+            }
+        }
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3878,6 +3941,15 @@ static int screenshot(const char *out)
     SDL_Surface *surf;
     look_poll();   /* art + palette for the captured track, same reason */
     wave_sync();   /* deterministic capture: decode now rather than mid-frame */
+    /* and finish the library walk: 24 frames cannot cover 632 folders, and a
+     * capture should show the totals the cache actually knows */
+    {
+        int more, guard = 0;
+        do {
+            more = libcache_step(cfg.music_dir, 200);
+            guard++;
+        } while (more && guard < 500);
+    }
     /* let the window map on wayland before grabbing pixels */
     for (int i = 0; i < 24; i++) {
         SDL_Event ev;
@@ -3964,6 +4036,7 @@ int main(int argc, char **argv)
         copy_file_if_missing(cfgfile, oldcfg);
     }
     config_load(cfgfile);
+    libcache_load();   /* track counts from the last run — nothing is re-opened */
     /* The theme is config-backed (the phone keeps the same thing in prefs, under
      * the key "dark"). MARIMO_THEME=light forces it for captures — and does so
      * without touching cfg.dark, so a test run can never rewrite her setting. */
@@ -4167,6 +4240,19 @@ int main(int argc, char **argv)
         }
         wave_poll();
         look_poll();
+        /* the library cache refreshes a few folders a frame: 632 readdirs would
+         * stall the first view, spread out they are invisible, and the second
+         * launch opens nothing at all */
+        if (libcache_step(cfg.music_dir, 8) == 0 && !cache_announced) {
+            int scanned = 0, reused = 0;
+            libcache_last_walk(&scanned, &reused);
+            if (scanned || reused) {
+                set_status("library cache: %d folders counted, %d reused (%d albums, %lld tracks)",
+                           scanned, reused, libcache_albums(cfg.music_dir),
+                           libcache_total_tracks(cfg.music_dir));
+                cache_announced = 1;
+            }
+        }
 
         /* embedded art retry (metadata can lag) */
         if (A.art_retry > 0 && !A.art) {
@@ -4232,6 +4318,8 @@ int main(int argc, char **argv)
     }
     if (A.tr) tagreader_destroy(A.tr);
     album_free();
+    libcache_save();
+    libcache_free();
     player_destroy(A.pl);
     scrobble_shutdown();
     mpris_shutdown();

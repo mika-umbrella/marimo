@@ -11,6 +11,7 @@
 #endif
 #include "album.h"
 #include "library.h"
+#include "libcache.h"
 
 #include <SDL_image.h>
 #include <ctype.h>
@@ -177,32 +178,13 @@ void album_split(const char *folder, char *artist, size_t asz,
 
 /* ---------------- track counts ---------------- */
 
-#define TCACHE 128
-static struct { char dir[1024]; int n; } tcache[TCACHE];
-static int tcache_next;
-
+/* The count itself lives in libcache: same number, but kept on disk, so it
+ * survives a restart and only folders whose mtime changed are ever opened again.
+ * The cache was written for the album rows asking for it every frame — over CIFS
+ * that was a readdir per row, per view. */
 int album_tracks(const char *dir)
 {
-    DIR *d;
-    struct dirent *de;
-    int n = 0, i;
-
-    if (!dir || !*dir) return -1;
-    for (i = 0; i < TCACHE; i++)
-        if (tcache[i].n >= 0 && !strcmp(tcache[i].dir, dir)) return tcache[i].n;
-
-    d = opendir(dir);
-    if (!d) return -1;
-    while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        if (lib_is_audio(de->d_name)) n++;
-    }
-    closedir(d);
-
-    i = tcache_next++ % TCACHE;
-    snprintf(tcache[i].dir, sizeof tcache[i].dir, "%s", dir);
-    tcache[i].n = n;
-    return n;
+    return libcache_tracks(dir);
 }
 
 /* ---------------- cover thumbnails ---------------- */
@@ -309,5 +291,4 @@ void album_free(void)
         thumbs[i].dir[0] = 0;
         thumbs[i].state = 0;
     }
-    for (i = 0; i < TCACHE; i++) tcache[i].n = -1;
 }
