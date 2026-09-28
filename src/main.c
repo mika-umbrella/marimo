@@ -135,6 +135,11 @@ typedef struct {
     Palette pal;
     char art_dir[Q_PATH_MAX];
     int shot_mode;          /* captures freeze the drift so they are reproducible */
+    /* queue gestures: press starts undecided, then the first real movement picks
+     * reorder (mostly vertical) or remove (mostly sideways) */
+    int g_mode;             /* 0 none, 1 pressed, 2 reorder, 3 swipe */
+    int g_from, g_to;       /* the row it started on, and where it is now */
+    int g_x0, g_y0, g_dx;   /* press point, and how far sideways since */
     /* modal */
     int modal, m_focus;
     char m_fields[4][512];
@@ -1470,6 +1475,40 @@ static double bg_time(void)
     return (double)SDL_GetTicks64() / 1000.0;
 }
 
+/* What a gesture looks like mid-flight: the dragged row highlighted in place (the
+ * phone keeps the row put rather than lifting a shadow), or the remove band
+ * growing in from the right. The phone pins a trash icon there; there is no trash
+ * among the ten hand-drawn icons, so this says "remove" — a stand-in, and an
+ * obvious thing to replace with art. */
+static void draw_queue_gesture(void)
+{
+    SDL_Rect row;
+    int y;
+
+    if (A.tab != 1 || A.g_mode < 2 || A.q.n <= 0) return;
+    y = A.L.list.y + (A.g_to - A.q_scroll) * ROW_H;
+    if (y < A.L.list.y || y + ROW_H > A.L.list.y + A.L.list.h) return;
+    row = (SDL_Rect){ A.L.list.x, y, A.L.list.w, ROW_H };
+
+    if (A.g_mode == 2) {
+        fill_panel(row, C_SELBG, 0xC0);
+        SDL_SetRenderDrawColor(A.ren, C_ACC.r, C_ACC.g, C_ACC.b, 255);
+        SDL_RenderDrawRect(A.ren, &row);
+        return;
+    }
+    {
+        int w = A.g_dx < 0 ? -A.g_dx : A.g_dx;
+        SDL_Rect band;
+        if (w > row.w) w = row.w;
+        band = (SDL_Rect){ row.x + row.w - w, row.y, w, row.h };
+        SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(A.ren, 190, 40, 40, 210);
+        SDL_RenderFillRect(A.ren, &band);
+        SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_NONE);
+        if (w > 40) draw_text(band.x + 5, band.y + 2, "remove", C_TXT, 1);
+    }
+}
+
 static void render(void)
 {
     A.tip = 0;
@@ -1498,6 +1537,7 @@ static void render(void)
     }
     if (A.modal) draw_modal();
     draw_tooltip();
+    draw_queue_gesture();
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
     SDL_Rect frame = { 0, 0, A.w, A.h };
     SDL_RenderDrawRect(A.ren, &frame);
@@ -2433,6 +2473,19 @@ static void handle_mouse(SDL_Event *ev)
 {
     int x = ev->button.x, y = ev->button.y;
     if (ev->type == SDL_MOUSEBUTTONDOWN) {
+        /* A press on a queue row arms a gesture, before the click is interpreted:
+         * the row still selects on release as it always did, and if the pointer
+         * then moves far enough the gesture takes over. */
+        if (!A.modal && A.tab == 1 && ev->button.button == SDL_BUTTON_LEFT &&
+            inr(A.L.list, x, y)) {
+            int gri = (y - A.L.list.y) / ROW_H + A.q_scroll;
+            if (gri >= 0 && gri < A.q.n) {
+                A.g_mode = 1;
+                A.g_from = A.g_to = gri;
+                A.g_x0 = x;
+                A.g_dx = 0;
+            }
+        }
         if (A.modal) {
             /* fields */
             int pw = A.w - 24 < 640 ? A.w - 24 : 640;
@@ -2596,7 +2649,81 @@ static void handle_mouse(SDL_Event *ev)
     } else if (ev->type == SDL_MOUSEBUTTONUP) {
         A.drag = 0;
         A.alpha_drag = 0;
+        /* --- queue gestures --- */
+        if (A.g_mode == 3) {
+            int w = A.g_dx < 0 ? -A.g_dx : A.g_dx;
+            if (w > A.L.list.w * 2 / 5) {          /* the phone's 40% threshold */
+                int idx = A.g_from, was_cur, n;
+                q_lock(&A.q);
+                was_cur = A.q.cur;
+                q_remove(&A.q, idx);
+                n = A.q.n;
+                /* cur is stated explicitly rather than assumed: whatever q_remove
+                 * does with it, the queue must still name the same track */
+                if (n == 0) {
+                    A.q.cur = -1;
+                } else if (idx < was_cur) {
+                    A.q.cur = was_cur - 1;
+                } else if (idx == was_cur) {
+                    A.q.cur = idx < n ? idx : n - 1;   /* the follower shifted into it */
+                } else {
+                    A.q.cur = was_cur;
+                }
+                {
+                    int newcur = A.q.cur;
+                    q_unlock(&A.q);
+                    if (n == 0) {
+                        stop_playback();
+                    } else if (idx == was_cur) {
+                        /* the row that was playing is gone: play what took its place.
+                         * next_track() here would skip an extra track, because the
+                         * follower has already moved down into this index. */
+                        play_index(newcur);
+                    } else {
+                        char nxt[Q_PATH_MAX] = "";
+                        q_lock(&A.q);
+                        {
+                            int nx = q_next(&A.q);
+                            if (nx >= 0 && nx < A.q.n)
+                                snprintf(nxt, sizeof nxt, "%s", A.q.items[nx].path);
+                        }
+                        q_unlock(&A.q);
+                        player_set_next(A.pl, nxt[0] ? nxt : NULL);
+                    }
+                }
+                set_status("removed from the queue");
+            }
+        }
+        A.g_mode = 0;
     } else if (ev->type == SDL_MOUSEMOTION) {
+        /* --- queue gestures: the first real movement picks the kind --- */
+        if (A.g_mode == 1) {
+            int dx = ev->motion.x - A.g_x0, dy = ev->motion.y - A.g_y0;
+            if (dx > 6 || dx < -6 || dy > 6 || dy < -6)
+                A.g_mode = (dx * dx > dy * dy) ? 3 : 2;
+        }
+        if (A.g_mode == 2 && A.q.n > 1) {
+            int target = (ev->motion.y - A.L.list.y) / ROW_H + A.q_scroll;
+            if (target < 0) target = 0;
+            if (target >= A.q.n) target = A.q.n - 1;
+            if (target != A.g_to) {
+                char nxt[Q_PATH_MAX] = "";
+                q_lock(&A.q);
+                q_move(&A.q, A.g_to, target);
+                A.g_to = target;
+                {
+                    int nx = q_next(&A.q);
+                    if (nx >= 0 && nx < A.q.n) snprintf(nxt, sizeof nxt, "%s", A.q.items[nx].path);
+                }
+                q_unlock(&A.q);
+                /* mpv holds only the current track and the next one, so the edit is
+                 * reconciled by saying what plays next — not by replaying the move */
+                player_set_next(A.pl, nxt[0] ? nxt : NULL);
+                set_status("queue: position %d", target + 1);
+            }
+        } else if (A.g_mode == 3) {
+            A.g_dx = ev->motion.x - A.g_x0;
+        }
         if (A.alpha_drag) {
             alpha_pick(ev->motion.y);
         } else if (A.drag == 1) {
@@ -4291,6 +4418,23 @@ int main(int argc, char **argv)
     A.shot_mode = shot_path != NULL;
     /* captures of the settings screen, in the same spirit as MARIMO_TAB */
     if (getenv("MARIMO_MODAL")) open_modal();
+    /* and a gesture, which otherwise needs a hand on the mouse:
+     *   MARIMO_GESTURE=swipe:120   MARIMO_GESTURE=reorder:3 */
+    {
+        const char *g = getenv("MARIMO_GESTURE");
+        if (g) {
+            A.tab = 1;
+            if (!strncmp(g, "swipe", 5)) {
+                A.g_mode = 3;
+                A.g_from = A.g_to = 3;
+                A.g_dx = atoi(strchr(g, ':') ? strchr(g, ':') + 1 : "0");
+            } else {
+                A.g_mode = 2;
+                A.g_from = 3;
+                A.g_to = atoi(strchr(g, ':') ? strchr(g, ':') + 1 : "0");
+            }
+        }
+    }
     if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
