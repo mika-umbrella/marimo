@@ -33,6 +33,11 @@ int album_tracks(const char *dir);
  * again next frame. Textures belong to the cache — never free them. */
 SDL_Texture *album_thumb(SDL_Renderer *ren, const char *dir, int size);
 
+/* The album's first audio file, or 0 when the folder has none. The full path goes
+ * into `out`. Used both for the thumbnail's embedded-art fallback and for the
+ * palette, so that an album's art is the art in both. */
+int album_first_audio(const char *dir, char *out, size_t n);
+
 /* How many thumbnails were decoded this run versus served from the disk cache.
  * Exists so "the cache works" is a number rather than a claim — a warm run must
  * decode nothing. */

@@ -48,7 +48,7 @@
 #include "libcache.h"
 #include <mpv/client.h>
 
-#define APP_VER "1.2"
+#define APP_VER "1.3"
 
 /* ---------------- palette ---------------- */
 /* The colours live in src/theme.c, because they are mode-dependent: theme_apply()
@@ -2197,10 +2197,31 @@ static void look_poll(void)
     if (strcmp(dir, A.art_dir) == 0) return;
     snprintf(A.art_dir, sizeof A.art_dir, "%s", dir);
 
-    /* Embedded art is not sampled (the folder cover is what this library has,
-     * and the phone prefers it too); no cover means the blue fallback, which is
-     * itself the honest signal that nothing was sampled. */
-    A.pal = palette_from_cover(lib_find_cover(dir, cov, sizeof cov) == 0 ? cov : NULL);
+    /* The backdrop wears the cover's colours — from the ranked cover file when there is
+     * one, and from the track's embedded picture when there is not, which is the same
+     * two sources the rows sample now. Otherwise an album got one palette in the list
+     * and another in the player. No art at all still leaves the deliberately blue
+     * fallback, which is the probe that answers "was anything sampled?" from a
+     * screenshot alone. */
+    if (lib_find_cover(dir, cov, sizeof cov) == 0 && cov[0]) {
+        A.pal = palette_from_cover(cov);
+    } else {
+        char track[4096];
+        unsigned char *art = NULL;
+        size_t len = 0;
+        SDL_Surface *surf = NULL;
+        A.pal = palette_from_cover(NULL);
+        if (album_first_audio(dir, track, sizeof track) &&
+            tag_read_art(track, &art, &len) == 0 && art && len) {
+            SDL_RWops *rw = SDL_RWFromConstMem(art, (int)len);
+            if (rw) surf = IMG_Load_RW(rw, 1);
+            free(art);
+        }
+        if (surf) {
+            A.pal = palette_from_surface(surf);
+            SDL_FreeSurface(surf);
+        }
+    }
     if (!A.art) load_art();
 }
 
