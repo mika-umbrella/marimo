@@ -36,6 +36,11 @@ long long libcache_total_tracks(const char *root);
 int libcache_albums(const char *root);
 int libcache_cached(const char *root);
 
+/* Forget a root so the next libcache_step re-stats it. The counts themselves stay,
+ * so this verifies rather than recounts: an unchanged folder is still answered
+ * from the cache, and only what actually changed is opened. */
+void libcache_forget(void);
+
 /* a one-line summary for the status bar: scanned vs reused on the last walk */
 void libcache_last_walk(int *scanned, int *reused);
 

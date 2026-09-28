@@ -130,6 +130,13 @@ int libcache_cached(const char *root)
     return walk_done && !strcmp(walk_root, root);
 }
 
+void libcache_forget(void)
+{
+    walk_done = 0;
+    walk_i = 0;
+    walk_root[0] = 0;      /* forces a fresh snapshot of the root on the next step */
+}
+
 void libcache_last_walk(int *scanned, int *reused)
 {
     if (scanned) *scanned = last_scanned;

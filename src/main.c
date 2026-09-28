@@ -1377,7 +1377,7 @@ static void draw_modal(void)
     SDL_SetRenderDrawBlendMode(A.ren, SDL_BLENDMODE_NONE);
 
     int pw = A.w - 24 < 640 ? A.w - 24 : 640;
-    SDL_Rect p = { (A.w - pw) / 2, 60, pw, 300 };
+    SDL_Rect p = { (A.w - pw) / 2, 60, pw, 356 };
     SDL_SetRenderDrawColor(A.ren, C_BG1.r, C_BG1.g, C_BG1.b, 255);
     SDL_RenderFillRect(A.ren, &p);
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
@@ -1431,6 +1431,30 @@ static void draw_modal(void)
         int st = scrobble_auth_state();
         const char *m = scrobble_auth_msg();
         draw_text(p.x + 10, ba.y + 28, m, st == -1 ? C_ERR : (st == 2 ? C_ACC : C_DIM), 1);
+    }
+    /* The two settings that had no home in the UI at all: the theme (it was the `d`
+     * key and a config key) and a rescan. The click handler recomputes these same
+     * rects, which is how this modal already treats its fields and buttons. */
+    {
+        SDL_Rect r1 = { p.x + 10, p.y + 262, pw - 20, 22 };
+        SDL_Rect r2 = { p.x + 10, p.y + 288, pw - 20, 22 };
+        SDL_Rect *rr[2] = { &r1, &r2 };
+        char lab[2][64];
+        int i;
+        snprintf(lab[0], sizeof lab[0], "theme: %s  (click to switch)",
+                 theme_is_dark() ? "dark" : "light");
+        snprintf(lab[1], sizeof lab[1], "rescan the library");
+        for (i = 0; i < 2; i++) {
+            SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
+            SDL_RenderFillRect(A.ren, rr[i]);
+            SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+            SDL_RenderDrawRect(A.ren, rr[i]);
+            if (inr(*rr[i], mx, my)) {
+                SDL_SetRenderDrawColor(A.ren, C_ACC.r, C_ACC.g, C_ACC.b, 255);
+                SDL_RenderDrawRect(A.ren, rr[i]);
+            }
+            draw_text(rr[i]->x + 6, rr[i]->y + 3, lab[i], C_TXT, 1);
+        }
     }
     draw_text(p.x + 10, p.y + p.h - 16,
               "keys: last.fm/api/account/create   token: listenbrainz.org/profile   [esc] close",
@@ -2411,13 +2435,30 @@ static void handle_mouse(SDL_Event *ev)
         if (A.modal) {
             /* fields */
             int pw = A.w - 24 < 640 ? A.w - 24 : 640;
-            SDL_Rect p = { (A.w - pw) / 2, 60, pw, 300 };
+            SDL_Rect p = { (A.w - pw) / 2, 60, pw, 356 };
             for (int i = 0; i < 4; i++) {
                 SDL_Rect f = { p.x + 10, p.y + 32 + i * 42 + 16, pw - 20, 22 };
                 if (inr(f, x, y)) { A.m_focus = i; return; }
             }
             SDL_Rect ba = { p.x + 10, p.y + 32 + 4 * 42 + 6, 150, 22 };
             SDL_Rect bs = { p.x + 170, p.y + 32 + 4 * 42 + 6, 120, 22 };
+            {
+                /* the same two rects draw_modal draws */
+                SDL_Rect r1 = { p.x + 10, p.y + 262, pw - 20, 22 };
+                SDL_Rect r2 = { p.x + 10, p.y + 288, pw - 20, 22 };
+                if (inr(r1, x, y)) {
+                    cfg.dark = !cfg.dark;
+                    theme_apply(cfg.dark);
+                    config_save();   /* at once: escaping the modal must not lose it */
+                    return;
+                }
+                if (inr(r2, x, y)) {
+                    libcache_forget();
+                    cache_announced = 0;   /* let the status line report the walk again */
+                    set_status("rescanning the library…");
+                    return;
+                }
+            }
             if (inr(ba, x, y)) { scrobble_auth_start(); return; }
             if (inr(bs, x, y)) { close_modal(1); return; }
             return;
@@ -3568,6 +3609,22 @@ static int selftest(const char *cfgfile_global)
                 if (e[i].kind == L_DIR && strcmp(e[i].name, ".."))
                     snprintf(first, sizeof first, "%s", e[i].path);
             lib_free_entries(e);
+            /* a rescan must do work again, and must not lose the cache doing it */
+            libcache_forget();
+            if (libcache_step(cfg.music_dir, 1) == 0) {
+                printf("FAIL: rescan after forget did no work\n");
+                fails++;
+            } else if (libcache_total_tracks(cfg.music_dir) != total) {
+                printf("FAIL: rescan changed the total (%lld was %lld)\n",
+                       libcache_total_tracks(cfg.music_dir), total);
+                fails++;
+            } else {
+                printf("libcache: rescan re-walks and keeps the same totals\n");
+            }
+            {
+                int more, guard = 0;
+                do { more = libcache_step(cfg.music_dir, 200); guard++; } while (more && guard < 500);
+            }
             if (!first[0]) {
                 printf("libcache: no folder to check\n");
             } else {
@@ -4195,6 +4252,8 @@ int main(int argc, char **argv)
 
     if (do_smoke) return smoke();
     A.shot_mode = shot_path != NULL;
+    /* captures of the settings screen, in the same spirit as MARIMO_TAB */
+    if (getenv("MARIMO_MODAL")) open_modal();
     if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
