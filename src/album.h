@@ -26,13 +26,24 @@ void album_split(const char *folder, char *artist, size_t asz,
  * the list asks for the same handful of folders every frame. */
 int album_tracks(const char *dir);
 
-/* A square cover thumbnail of `size` pixels, or NULL. Loading is spread across
- * frames on purpose (a few per frame, never a synchronous burst) so scrolling
- * into the library cannot hitch, and misses are remembered so a coverless album
- * is not re-opened sixty times a second. Call album_frame() once per frame to
- * release the budget. Textures belong to the cache — never free them. */
-void album_frame(void);
+/* A square cover thumbnail of `size` pixels, or NULL. The decode happens on a
+ * worker thread and the result is cached on disk, because the render thread must
+ * never decode a 25 MB JPEG to draw a 16px square — that was the scrolling
+ * stutter. Returns NULL while a thumbnail is still coming: draw the icon and ask
+ * again next frame. Textures belong to the cache — never free them. */
 SDL_Texture *album_thumb(SDL_Renderer *ren, const char *dir, int size);
+
+/* Tags for one track file, from a cache: title/artist and seconds (0 when the tag
+ * reader could not say). Returns 1 when anything was read, so callers can fall
+ * back to the filename. Reading is the fast FLAC/MP3 path, and it happens once per
+ * file — the library rows ask for every visible file every frame. */
+int album_track_tags(const char *path, char *title, size_t tn, char *artist, size_t an,
+                     int *secs);
+
+/* Display form of a folder or track name: the em/en dashes her folders mix in
+ * become plain hyphens. Display only — the name on disk is left exactly alone,
+ * since queue.dat, the scrobbles and the cover matching all key off it. */
+void album_dashes(const char *in, char *out, size_t n);
 
 void album_free(void);
 

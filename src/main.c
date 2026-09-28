@@ -888,13 +888,14 @@ static void draw_breadcrumb(void)
         SDL_Rect clip = r;
         SDL_RenderSetClipRect(A.ren, &clip);
         for (i = 0; i < n; i++) {
-            int w;
+            int w = font_w(&A.font, parts[i], 1);
+            /* measured BEFORE drawing: the old check ran after, so the last part
+             * could overrun the summary and print the two on top of each other */
+            if (x + 8 + w > r.x + r.w - sumw) break;
             draw_text(x, r.y + 2, "/", C_BD, 1);
             x += 8;
-            w = font_w(&A.font, parts[i], 1);
             draw_text(x, r.y + 2, parts[i], C_DIM, 1);
             x += w;
-            if (x > r.x + r.w - sumw) break;   /* never draw under the summary */
         }
         free(dup);
         SDL_RenderSetClipRect(A.ren, NULL);
@@ -941,31 +942,45 @@ static void draw_list_rows(int tab)
              * rather than one per frame. */
             int tracks = e->kind == L_DIR ? album_tracks(e->path) : -1;
             char right[256] = "";
-            char shown[600] = "";
+            char shown[600] = "", tipfull[600] = "";
             SDL_Texture *thumb = NULL;
 
             if (tracks > 0) {
-                char artist[256], title[256];
+                char artist[256], title[256], a2[256];
                 int yr;
                 album_split(e->name, artist, sizeof artist, title, sizeof title);
                 yr = album_year(e->name);
-                /* the phone's row is [cover] title / artist · year, so the name
-                 * column gets the *parsed* title: showing the raw folder name
-                 * alongside the parsed parts prints the artist and the year twice
-                 * (it did, until this). Fall back to the folder name only when
-                 * parsing found no title at all. */
-                snprintf(shown, sizeof shown, "%s", title[0] ? title : e->name);
-                /* the precision is not decoration: without it the compiler cannot
-                 * see that 256+4+year fits in `right`, and it is right — a 256-char
-                 * artist would truncate mid-ESC-sequence. The row shows ~40 chars,
-                 * so chopping at 200 costs nothing and keeps the format intact. */
-                if (artist[0] && yr)      snprintf(right, sizeof right, "%.200s \xc2\xb7 %d", artist, yr);
-                else if (artist[0])       snprintf(right, sizeof right, "%.240s", artist);
-                else if (yr)              snprintf(right, sizeof right, "%d", yr);
+                /* the name column takes the *parsed* title — the raw folder name
+                 * prints the artist and the year twice — and the em/en dashes her
+                 * folders mix in become hyphens for display only. The name on disk
+                 * is left alone: queue.dat, the scrobbles and the cover matcher all
+                 * key off it, so normalising for real would break all three. */
+                album_dashes(title[0] ? title : e->name, shown, sizeof shown);
+                album_dashes(artist, a2, sizeof a2);
+                /* the hover tip is the *title*, not the folder name: the folder name
+                 * is the implementation, the title is what she is looking for */
+                snprintf(tipfull, sizeof tipfull, "%s", shown);
+                if (a2[0] && yr)      snprintf(right, sizeof right, "%.200s \xc2\xb7 %d", a2, yr);
+                else if (a2[0])       snprintf(right, sizeof right, "%.240s", a2);
+                else if (yr)          snprintf(right, sizeof right, "%d", yr);
                 thumb = album_thumb(A.ren, e->path, 16);
+            } else if (e->kind == L_FILE) {
+                /* a track reads as its tagged title and a duration, the way the
+                 * phone's rows do, rather than a filename and a byte count */
+                char title[256], artist[256];
+                int secs = 0;
+                if (album_track_tags(e->path, title, sizeof title, artist, sizeof artist, &secs)) {
+                    album_dashes(title[0] ? title : e->name, shown, sizeof shown);
+                    snprintf(tipfull, sizeof tipfull, "%s", shown);
+                    if (secs > 0) snprintf(right, sizeof right, "%d:%02d", secs / 60, secs % 60);
+                } else {
+                    snprintf(shown, sizeof shown, "%s", e->name);
+                    snprintf(tipfull, sizeof tipfull, "%s", e->name);
+                    fmt_size(right, e->size);
+                }
             } else {
                 snprintf(shown, sizeof shown, "%s", e->name);
-                if (e->kind == L_FILE) fmt_size(right, e->size);
+                snprintf(tipfull, sizeof tipfull, "%s", e->name);
             }
 
             if (thumb) {
@@ -988,7 +1003,7 @@ static void draw_list_rows(int tab)
                             : e->kind == L_DIR ? (tracks > 0 ? C_TXT : C_AMBER) : C_TXT;
                 draw_text(row.x + 24, y + 2, disp, c, 1);
                 if (hover && trunc) {
-                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s", e->name);
+                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s", tipfull);
                     A.tip = 1;
                 }
                 if (right[0]) {
@@ -1433,7 +1448,6 @@ static double bg_time(void)
 static void render(void)
 {
     A.tip = 0;
-    album_frame();      /* cover thumbnails get a couple of loads per frame, no more */
     {
         /* the backdrop wears the cover's colours, as on the phone, and drifts;
          * the panels and the accent stay fixed so text survives bright art. The
@@ -3949,6 +3963,21 @@ static int screenshot(const char *out)
             more = libcache_step(cfg.music_dir, 200);
             guard++;
         } while (more && guard < 500);
+    }
+    /* The thumbnails now decode on a worker, which is the whole point of the
+     * change — but it also means a 24-frame capture would catch the rows mostly
+     * artless. Wait for the visible ones so a screenshot is representative.
+     * Test path only: the running app never blocks on a decode. */
+    {
+        int i, waited = 0;
+        for (i = 0; i < A.n_entries && i < 24; i++) {
+            if (A.entries[i].kind != L_DIR) continue;
+            if (album_tracks(A.entries[i].path) <= 0) continue;
+            while (!album_thumb(A.ren, A.entries[i].path, 16) && waited < 400) {
+                SDL_Delay(5);
+                waited += 5;
+            }
+        }
     }
     /* let the window map on wayland before grabbing pixels */
     for (int i = 0; i < 24; i++) {

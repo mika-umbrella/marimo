@@ -12,6 +12,10 @@
 #include "album.h"
 #include "library.h"
 #include "libcache.h"
+#include "tags.h"
+
+#include <pthread.h>
+#include <stdint.h>
 
 #include <SDL_image.h>
 #include <ctype.h>
@@ -19,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ---------------- year ---------------- */
 
@@ -189,97 +194,321 @@ int album_tracks(const char *dir)
 
 /* ---------------- cover thumbnails ---------------- */
 
-#define THUMBS 96
-#define THUMB_PER_FRAME 2      /* enough to feel instant, never enough to hitch */
+#define THUMBS 128
+#define THUMB_MAX 64           /* nothing asks for a bigger square than this */
 
 typedef struct {
     char dir[1024];
     int size;
     SDL_Texture *tex;
-    int state;                 /* 0 empty, 1 loaded, 2 no cover / give up */
+    int state;                 /* 0 empty, 1 loaded, 2 no cover (remembered) */
 } Thumb;
 
 static Thumb thumbs[THUMBS];
 static int thumbs_next;
-static int thumb_budget;
 
-void album_frame(void)
+/* Decoding happens here, never on the render thread. Some of these covers are
+ * 25 MB JPEGs (that is not a typo — the census found one at 25,251,998 bytes) and
+ * IMG_Load expands them fully, to be shrunk to a 16px square. Doing that inline,
+ * twice a frame, was the scrolling stutter nova felt.
+ *
+ * One worker and one job at a time on purpose: a cold pass fills in over about a
+ * second without blocking a frame, and with the disk cache warm it is instant, so
+ * a second worker would buy nothing but bookkeeping. */
+static struct {
+    pthread_mutex_t lock;
+    pthread_t thr;
+    int running;
+    char job_dir[1024];
+    int job_size;
+    int have_result;           /* the main thread has not collected it yet */
+    char done_dir[1024];
+    int done_size;
+    int done_ok;
+    unsigned char px[THUMB_MAX * THUMB_MAX * 4];
+} tw;
+
+static uint64_t thumb_hash(const char *s)
 {
-    thumb_budget = THUMB_PER_FRAME;
+    uint64_t h = 1469598103934665603ull;
+    for (; *s; s++) {
+        h ^= (unsigned char)*s;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+/* ~/.cache/marimo/thumbs/<hash>-<size>.raw — exactly size*size*4 bytes of ARGB,
+ * so a short or stale file is rejected by its length and never needs a header. */
+static int thumb_cache_path(const char *dir, int size, char *out, size_t n)
+{
+    const char *base = getenv("XDG_CACHE_HOME");
+    char d[1024];
+    if (base && *base) snprintf(d, sizeof d, "%s/marimo/thumbs", base);
+    else {
+        const char *home = getenv("HOME");
+        if (!home || !*home) return 0;
+        snprintf(d, sizeof d, "%s/.cache/marimo/thumbs", home);
+    }
+    mkdir(d, 0755);      /* EEXIST is the normal case */
+    snprintf(out, n, "%s/%016llx-%d.raw", d, (unsigned long long)thumb_hash(dir), size);
+    return 1;
+}
+
+/* the whole decode + shrink, with no SDL renderer anywhere in it, so it is safe
+ * on the worker */
+static int thumb_decode(const char *dir, int size, unsigned char *out)
+{
+    char cov[1024];
+    SDL_Surface *raw, *conv, *small;
+    int ok = 0;
+
+    if (lib_find_cover(dir, cov, sizeof cov) != 0 || !cov[0]) return 0;
+    raw = IMG_Load(cov);
+    if (!raw) return 0;
+    conv = SDL_ConvertSurfaceFormat(raw, SDL_PIXELFORMAT_ARGB8888, 0);
+    SDL_FreeSurface(raw);
+    if (!conv) return 0;
+    small = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (small) {
+        /* letterbox, not crop: a non-square cover should still be recognisable */
+        SDL_Rect dst = { 0, 0, size, size };
+        double ar = (double)conv->w / (double)conv->h;
+        if (conv->w > conv->h) {
+            dst.h = (int)(size / ar);
+            dst.y = (size - dst.h) / 2;
+        } else if (conv->h > conv->w) {
+            dst.w = (int)(size * ar);
+            dst.x = (size - dst.w) / 2;
+        }
+        SDL_FillRect(small, NULL, 0);
+        SDL_BlitScaled(conv, NULL, small, &dst);
+        {
+            int y;
+            for (y = 0; y < size; y++)
+                memcpy(out + (size_t)y * size * 4,
+                       (unsigned char *)small->pixels + (size_t)y * small->pitch,
+                       (size_t)size * 4);
+        }
+        ok = 1;
+        SDL_FreeSurface(small);
+    }
+    SDL_FreeSurface(conv);
+    return ok;
+}
+
+static void *thumb_thread(void *unused)
+{
+    char dir[1024];
+    int size;
+    unsigned char px[THUMB_MAX * THUMB_MAX * 4];
+    int ok;
+    char path[1200];
+    (void)unused;
+
+    pthread_mutex_lock(&tw.lock);
+    snprintf(dir, sizeof dir, "%s", tw.job_dir);
+    size = tw.job_size;
+    pthread_mutex_unlock(&tw.lock);
+
+    ok = thumb_decode(dir, size, px);
+    if (ok) {
+        /* a successful thumbnail is worth keeping; a missing cover is not (she
+         * may drop one in later, and a cached miss would never notice) */
+        if (thumb_cache_path(dir, size, path, sizeof path)) {
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fwrite(px, 1, (size_t)size * size * 4, f);
+                fclose(f);
+            }
+        }
+    }
+    pthread_mutex_lock(&tw.lock);
+    if (ok) memcpy(tw.px, px, (size_t)size * size * 4);
+    tw.done_ok = ok;
+    tw.done_size = size;
+    snprintf(tw.done_dir, sizeof tw.done_dir, "%s", dir);
+    tw.have_result = 1;
+    tw.running = 0;
+    pthread_mutex_unlock(&tw.lock);
+    return NULL;
+}
+
+static SDL_Texture *tex_from_px(SDL_Renderer *ren, const unsigned char *px, int size)
+{
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormatFrom((void *)px, size, size, 32,
+                                                        size * 4, SDL_PIXELFORMAT_ARGB8888);
+    SDL_Texture *t = NULL;
+    if (s) {
+        t = SDL_CreateTextureFromSurface(ren, s);
+        SDL_FreeSurface(s);
+    }
+    if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    return t;
 }
 
 SDL_Texture *album_thumb(SDL_Renderer *ren, const char *dir, int size)
 {
     Thumb *slot = NULL;
+    char path[1200];
     int i;
-    char cov[1024];
 
     if (!ren || !dir || !*dir) return NULL;
+    if (size > THUMB_MAX) size = THUMB_MAX;
+    if (size < 1) return NULL;
+
     for (i = 0; i < THUMBS; i++) {
         if (thumbs[i].dir[0] && !strcmp(thumbs[i].dir, dir) && thumbs[i].size == size) {
             if (thumbs[i].state == 1) return thumbs[i].tex;
-            /* a pending or failed slot: try again only if this frame still has
-             * budget, otherwise leave it and draw without art for now */
-            if (thumbs[i].state == 2) return NULL;
-            slot = &thumbs[i];
-            break;
+            return NULL;            /* known to have no cover */
         }
     }
-    if (!slot) {
-        for (i = 0; i < THUMBS; i++) {
-            if (thumbs[i].dir[0]) continue;
-            slot = &thumbs[i];
-            break;
+
+    /* 1. the disk cache: one small read, no decode at all */
+    if (thumb_cache_path(dir, size, path, sizeof path)) {
+        struct stat st;
+        if (stat(path, &st) == 0 && st.st_size == (long long)size * size * 4) {
+            FILE *f = fopen(path, "rb");
+            unsigned char *buf = malloc((size_t)size * size * 4);
+            if (f && buf && fread(buf, 1, (size_t)size * size * 4, f) == (size_t)size * size * 4) {
+                SDL_Texture *t = tex_from_px(ren, buf, size);
+                fclose(f);
+                free(buf);
+                if (t) {
+                    slot = &thumbs[thumbs_next++ % THUMBS];
+                    if (slot->tex) SDL_DestroyTexture(slot->tex);
+                    snprintf(slot->dir, sizeof slot->dir, "%s", dir);
+                    slot->size = size;
+                    slot->state = 1;
+                    slot->tex = t;
+                    return t;
+                }
+            } else {
+                if (f) fclose(f);
+                free(buf);
+            }
         }
-        if (!slot) {   /* cache full: evict in creation order */
-            slot = &thumbs[thumbs_next++ % THUMBS];
-            if (slot->tex) SDL_DestroyTexture(slot->tex);
-            slot->tex = NULL;
+    }
+
+    /* 2. a finished decode waiting to be turned into a texture */
+    pthread_mutex_lock(&tw.lock);
+    if (tw.have_result && tw.done_size == size && !strcmp(tw.done_dir, dir)) {
+        int ok = tw.done_ok;
+        tw.have_result = 0;
+        if (ok) {
+            SDL_Texture *t = tex_from_px(ren, tw.px, size);
+            pthread_mutex_unlock(&tw.lock);
+            if (t) {
+                slot = &thumbs[thumbs_next++ % THUMBS];
+                if (slot->tex) SDL_DestroyTexture(slot->tex);
+                snprintf(slot->dir, sizeof slot->dir, "%s", dir);
+                slot->size = size;
+                slot->state = 1;
+                slot->tex = t;
+                return t;
+            }
+            return NULL;
         }
+        pthread_mutex_unlock(&tw.lock);
+        /* remembered as artless, so this folder is not asked about every frame */
+        slot = &thumbs[thumbs_next++ % THUMBS];
+        if (slot->tex) SDL_DestroyTexture(slot->tex);
+        slot->tex = NULL;
         snprintf(slot->dir, sizeof slot->dir, "%s", dir);
         slot->size = size;
-        slot->state = 0;
-    }
-    if (thumb_budget <= 0) return NULL;   /* come back next frame */
-    thumb_budget--;
-
-    if (lib_find_cover(dir, cov, sizeof cov) != 0 || !cov[0]) {
         slot->state = 2;
         return NULL;
     }
-    {
-        SDL_Surface *raw = IMG_Load(cov);
-        SDL_Surface *small, *conv;
-        if (!raw) { slot->state = 2; return NULL; }
-        small = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_ARGB8888);
-        if (!small) { SDL_FreeSurface(raw); slot->state = 2; return NULL; }
-        /* letterbox rather than crop: a non-square cover should still be
-         * recognisable, and the background is drawn under it anyway */
-        {
-            SDL_Rect dst = { 0, 0, size, size };
-            double ar = (double)raw->w / (double)raw->h;
-            if (raw->w > raw->h) {
-                dst.h = (int)(size / ar);
-                dst.y = (size - dst.h) / 2;
-            } else if (raw->h > raw->w) {
-                dst.w = (int)(size * ar);
-                dst.x = (size - dst.w) / 2;
-            }
-            SDL_FillRect(small, NULL, SDL_MapRGBA(small->format, 0, 0, 0, 0));
-            conv = SDL_ConvertSurfaceFormat(raw, SDL_PIXELFORMAT_ARGB8888, 0);
-            if (conv) {
-                SDL_BlitScaled(conv, NULL, small, &dst);
-                SDL_FreeSurface(conv);
-            }
+    /* 3. nothing ready: hand it to the worker and draw the icon this frame */
+    if (!tw.running) {
+        snprintf(tw.job_dir, sizeof tw.job_dir, "%s", dir);
+        tw.job_size = size;
+        tw.running = 1;
+        if (pthread_create(&tw.thr, NULL, thumb_thread, NULL) == 0) {
+            pthread_detach(tw.thr);
+        } else {
+            tw.running = 0;
         }
-        SDL_FreeSurface(raw);
-        slot->tex = SDL_CreateTextureFromSurface(ren, small);
-        SDL_FreeSurface(small);
-        if (!slot->tex) { slot->state = 2; return NULL; }
-        SDL_SetTextureBlendMode(slot->tex, SDL_BLENDMODE_BLEND);
-        slot->state = 1;
-        return slot->tex;
     }
+    pthread_mutex_unlock(&tw.lock);
+    return NULL;
+}
+
+/* ---------------- track tags, from a cache ---------------- */
+
+#define TAG_CACHE 512
+static struct {
+    char path[1024];
+    int ok;
+    char title[256];
+    char artist[256];
+    int secs;
+} tagcache[TAG_CACHE];
+static int tagcache_next;
+
+int album_track_tags(const char *path, char *title, size_t tn, char *artist, size_t an,
+                     int *secs)
+{
+    Meta m;
+    int i;
+
+    if (title && tn) title[0] = 0;
+    if (artist && an) artist[0] = 0;
+    if (secs) *secs = 0;
+    if (!path || !*path) return 0;
+
+    for (i = 0; i < TAG_CACHE; i++) {
+        if (tagcache[i].path[0] && !strcmp(tagcache[i].path, path)) {
+            if (!tagcache[i].ok) return 0;
+            if (title) snprintf(title, tn, "%s", tagcache[i].title);
+            if (artist) snprintf(artist, an, "%s", tagcache[i].artist);
+            if (secs) *secs = tagcache[i].secs;
+            return 1;
+        }
+    }
+
+    /* absent: read it once. The FLAC/MP3 path is the fast deterministic one; the
+     * rows ask about every visible file on every frame, which is why this is
+     * cached at all. */
+    memset(&m, 0, sizeof m);
+    {
+        int ok = (tag_read_meta(path, &m) == 0) && (m.title[0] || m.artist[0] || m.duration_ms > 0);
+        i = tagcache_next++ % TAG_CACHE;
+        snprintf(tagcache[i].path, sizeof tagcache[i].path, "%s", path);
+        tagcache[i].ok = ok;
+        snprintf(tagcache[i].title, sizeof tagcache[i].title, "%.240s", ok ? m.title : "");
+        snprintf(tagcache[i].artist, sizeof tagcache[i].artist, "%.240s", ok ? m.artist : "");
+        tagcache[i].secs = (ok && m.duration_ms > 0) ? (int)(m.duration_ms / 1000) : 0;
+        if (!ok) return 0;
+        if (title) snprintf(title, tn, "%s", tagcache[i].title);
+        if (artist) snprintf(artist, an, "%s", tagcache[i].artist);
+        if (secs) *secs = tagcache[i].secs;
+        return 1;
+    }
+}
+
+/* ---------------- display dashes ---------------- */
+
+void album_dashes(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    const char *p = in ? in : "";
+    while (*p && o + 1 < n) {
+        unsigned char c = (unsigned char)*p;
+        /* U+2010..U+2015 and U+2212: the dashes her folders mix in freely. Display
+         * only — the name on disk is what queue.dat, the scrobbles and the cover
+         * matcher key off, so this must never write back. */
+        if (c == 0xE2 && p[1] && p[2] &&
+            (((unsigned char)p[1] == 0x80 && (unsigned char)p[2] >= 0x90 &&
+              (unsigned char)p[2] <= 0x95) ||
+             ((unsigned char)p[1] == 0x88 && (unsigned char)p[2] == 0x92))) {
+            out[o++] = '-';
+            p += 3;
+            continue;
+        }
+        out[o++] = *p++;
+    }
+    out[o] = 0;
 }
 
 void album_free(void)
@@ -291,4 +520,5 @@ void album_free(void)
         thumbs[i].dir[0] = 0;
         thumbs[i].state = 0;
     }
+    for (i = 0; i < TAG_CACHE; i++) tagcache[i].path[0] = 0;
 }
