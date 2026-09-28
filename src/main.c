@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <strings.h>
 
 #include "font.h"
 #include "player.h"
@@ -40,6 +41,7 @@
 #include "fs.h"
 #include "history.h"
 #include "recap.h"
+#include "waveform.h"
 #include <mpv/client.h>
 
 #define APP_VER "1.1"
@@ -116,6 +118,19 @@ typedef struct {
     int meta_running;
     pthread_t meta_thr;
     volatile int meta_stop;
+    /* waveform for the current track. Peaks for a sidecar'd album are read
+     * inline (a few KB); anything else is decoded on a detached worker and
+     * published under wave_lock, so the UI thread only ever reads a buffer
+     * that is finished. wave_shown is the file the visible peaks belong to. */
+    pthread_t wave_thr;
+    int wave_running;
+    int wave_ok;
+    unsigned char wave[WAVE_BUCKETS];
+    unsigned char wave_pub[WAVE_BUCKETS];
+    int wave_pub_ok;
+    char wave_pub_path[Q_PATH_MAX];
+    char wave_cur[Q_PATH_MAX];
+    char wave_shown[Q_PATH_MAX];
     /* modal */
     int modal, m_focus;
     char m_fields[4][512];
@@ -130,6 +145,8 @@ typedef struct {
 } App;
 
 static App A;
+/* guards the wave_pub* / wave_running handoff only — never held across a decode */
+static pthread_mutex_t wave_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *status_idle = "";
 
@@ -429,12 +446,14 @@ static void layout(void)
             L->b_stop = (SDL_Rect){ rx + 56, cy, 24, CTRL_H };
             L->b_next = (SDL_Rect){ rx + 84, cy, 24, CTRL_H };
             L->time.x = rx + rw - 104; L->time.y = cy + 3; L->time.w = 104; L->time.h = 16;
-            /* seek gets its own row, spanning the whole right column */
-            L->seek.x = rx; L->seek.y = cy + 26; L->seek.w = rw; L->seek.h = 6;
+            /* seek gets its own row, spanning the whole right column. It is tall
+             * enough to hold the 96-bar waveform, and the whole band is the drag
+             * target, which also makes it the easier thing to grab. */
+            L->seek.x = rx; L->seek.y = cy + 26; L->seek.w = rw; L->seek.h = 24;
         }
 
         {
-            int sy = y0 + 100;
+            int sy = y0 + 120;   /* shuffle/repeat/volume sit under the waveform */
             L->b_shuf = (SDL_Rect){ rx, sy, 18, 16 };
             L->b_rep = (SDL_Rect){ rx + 20, sy, 18, 16 };
             L->vol_icon = (SDL_Rect){ rx + 44, sy, 16, 16 };
@@ -602,6 +621,52 @@ static void draw_slider(SDL_Rect r, double v, int enabled)
     SDL_RenderDrawRect(A.ren, &border);
 }
 
+/* The seekbar is also the waveform: 96 bars, the played part in the accent
+ * colour and the rest dim, with a playhead line. Same shape the phone draws,
+ * except these bars are measured rather than a PRNG skyline. With no peaks yet
+ * — a file being decoded, or one that will not decode — it stays an honest
+ * slider, so the band is never a lie about having a waveform. */
+static void draw_seek(double v, int enabled)
+{
+    SDL_Rect r = A.L.seek;
+    int i, bw, maxh;
+    double play;
+
+    if (!A.wave_ok) {
+        draw_slider(r, v, enabled);
+        return;
+    }
+    SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
+    SDL_RenderFillRect(A.ren, &r);
+
+    bw = r.w / WAVE_BUCKETS;
+    if (bw < 2) bw = 2;
+    maxh = r.h - 2;
+    play = v * WAVE_BUCKETS;
+    for (i = 0; i < WAVE_BUCKETS; i++) {
+        int h = (int)(maxh * (A.wave[i] / 100.0));
+        SDL_Rect b;
+        if (h < 2) h = 2;                  /* a quiet moment still has a bar */
+        b.x = r.x + (i * r.w) / WAVE_BUCKETS;
+        b.y = r.y + r.h - 1 - h;
+        b.w = bw - 1 < 1 ? 1 : bw - 1;
+        b.h = h;
+        if (i < play)
+            SDL_SetRenderDrawColor(A.ren, C_ACC.r, C_ACC.g, C_ACC.b, 255);
+        else
+            SDL_SetRenderDrawColor(A.ren, C_DIM.r, C_DIM.g, C_DIM.b, 255);
+        SDL_RenderFillRect(A.ren, &b);
+    }
+    {
+        int px = r.x + (int)(r.w * v);
+        if (px >= r.x + r.w) px = r.x + r.w - 1;
+        SDL_SetRenderDrawColor(A.ren, C_TXT.r, C_TXT.g, C_TXT.b, 255);
+        SDL_RenderDrawLine(A.ren, px, r.y, px, r.y + r.h - 1);
+    }
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawRect(A.ren, &r);
+}
+
 static void draw_header(void)
 {
     SDL_Rect r = A.L.header;
@@ -702,7 +767,7 @@ static void draw_playerbar(void)
     double v = (len > 0 && t >= 0) ? t / len : 0;
     if (v < 0) v = 0;
     if (v > 1) v = 1;
-    draw_slider(A.L.seek, v, len > 0);
+    draw_seek(v, len > 0);
     {
         int tt = t > 0 ? (int)t : 0;
         int tl = len > 0 ? (int)len : 0;
@@ -1687,6 +1752,129 @@ static void spawn_meta(void)
     if (!A.tr) return;
     A.meta_running = 1;
     pthread_create(&A.meta_thr, NULL, meta_thread, A.tr);
+}
+
+/* ---------------- waveform ---------------- */
+
+/* decode (or read from cache) and publish. Runs on the worker thread, and inline
+ * in screenshot mode where a race against the frame budget would be silly. */
+static void wave_compute(const char *path)
+{
+    unsigned char tmp[WAVE_BUCKETS];
+    int ok = wave_decode_cached(path, tmp);
+
+    pthread_mutex_lock(&wave_lock);
+    if (ok) memcpy(A.wave_pub, tmp, sizeof tmp);
+    A.wave_pub_ok = ok;
+    snprintf(A.wave_pub_path, sizeof A.wave_pub_path, "%s", path);
+    A.wave_running = 0;
+    pthread_mutex_unlock(&wave_lock);
+}
+
+/* Called on every track change. A sidecar'd album is read right here — a few KB,
+ * no measurable time — so those tracks get their waveform with no flicker at all.
+ * Anything else is decoded off the UI thread by wave_poll(). */
+static void wave_request(const char *path)
+{
+    unsigned char tmp[WAVE_BUCKETS];
+    char dir[Q_PATH_MAX], *slash;
+
+    snprintf(A.wave_cur, sizeof A.wave_cur, "%s", path ? path : "");
+    A.wave_ok = 0;
+    if (!path) return;
+
+    snprintf(dir, sizeof dir, "%s", path);
+    slash = strrchr(dir, '/');
+    if (!slash) return;
+    *slash = 0;
+    if (wave_sidecar_read(dir, slash + 1, tmp)) {
+        memcpy(A.wave, tmp, sizeof tmp);
+        A.wave_ok = 1;
+        pthread_mutex_lock(&wave_lock);
+        snprintf(A.wave_shown, sizeof A.wave_shown, "%s", path);
+        pthread_mutex_unlock(&wave_lock);
+    }
+}
+
+static void *wave_thread(void *x)
+{
+    char *path = x;
+    wave_compute(path);
+    free(path);
+    return NULL;
+}
+
+/* Screenshot mode captures a single frame, so racing a decode against it would
+ * be silly — this does the work inline. Test path only: the running app never
+ * blocks its UI thread on a decode. */
+static void wave_sync(void)
+{
+    char want[Q_PATH_MAX];
+    if (A.wave_ok) return;                 /* the sidecar already answered */
+    pthread_mutex_lock(&wave_lock);
+    snprintf(want, sizeof want, "%s", A.wave_cur);
+    A.wave_running = 1;
+    pthread_mutex_unlock(&wave_lock);
+    if (want[0]) {
+        wave_compute(want);                /* clears wave_running itself */
+    } else {
+        pthread_mutex_lock(&wave_lock);
+        A.wave_running = 0;
+        pthread_mutex_unlock(&wave_lock);
+    }
+}
+
+/* Per frame: adopt a finished result, then start one if the current track still
+ * has no waveform and no worker is busy. A decode that fails is recorded as
+ * "shown" rather than retried every frame (nothing here caches a failure — that
+ * would be a permanent verdict on a file that might just have been mid-copy). */
+static void wave_poll(void)
+{
+    char want[Q_PATH_MAX], shown[Q_PATH_MAX];
+    int busy;
+
+    /* The waveform follows whatever the player bar is showing — the current
+     * queue item — rather than only the last thing play_index() started. A queue
+     * restored without playback still gets its waveform, and so does one whose
+     * current item changed by any other route. */
+    want[0] = 0;
+    q_lock(&A.q);
+    if (A.q.cur >= 0 && A.q.cur < A.q.n)
+        snprintf(want, sizeof want, "%s", A.q.items[A.q.cur].path);
+    q_unlock(&A.q);
+    if (strcmp(want, A.wave_cur) != 0) wave_request(want);
+
+    pthread_mutex_lock(&wave_lock);
+    if (A.wave_pub_path[0] && strcmp(A.wave_pub_path, A.wave_shown) != 0) {
+        snprintf(A.wave_shown, sizeof A.wave_shown, "%s", A.wave_pub_path);
+        /* a result for a track we have since skipped past is dropped, not shown */
+        if (strcmp(A.wave_pub_path, A.wave_cur) == 0) {
+            A.wave_ok = A.wave_pub_ok;
+            if (A.wave_ok) memcpy(A.wave, A.wave_pub, sizeof A.wave);
+        }
+    }
+    busy = A.wave_running;
+    snprintf(want, sizeof want, "%s", A.wave_cur);
+    snprintf(shown, sizeof shown, "%s", A.wave_shown);
+    pthread_mutex_unlock(&wave_lock);
+
+    if (busy || !want[0] || A.wave_ok) return;
+    if (strcmp(want, shown) == 0) return;
+    {
+        char *p = strdup(want);
+        if (!p) return;
+        pthread_mutex_lock(&wave_lock);
+        A.wave_running = 1;
+        pthread_mutex_unlock(&wave_lock);
+        if (pthread_create(&A.wave_thr, NULL, wave_thread, p) != 0) {
+            pthread_mutex_lock(&wave_lock);
+            A.wave_running = 0;
+            pthread_mutex_unlock(&wave_lock);
+            free(p);
+        } else {
+            pthread_detach(A.wave_thr);
+        }
+    }
 }
 
 /* ---------------- events ---------------- */
@@ -2712,6 +2900,99 @@ static int selftest(const char *cfgfile_global)
 #undef CHECK
     }
 
+    /* waveform: the sidecar parser, then — the interesting half — our own
+     * envelope against a sidecar the generator really wrote. This matters
+     * because the desktop decodes for itself when an album has no sidecar, and
+     * those peaks have to be the same numbers make-waveforms.py would have
+     * produced, or the phone and the desktop would describe one track two ways.
+     *
+     *   MARIMO_WAVE_CHECK="/path/to/an/album/with/waves.marimo" ./build/marimo --selftest
+     */
+    {
+        unsigned char blob[512], got[WAVE_BUCKETS];
+        size_t off = 0, cut;
+        int i, ok = 1;
+#define WCHECK(cond, msg) do { if (!(cond)) { printf("FAIL: waveform %s\n", msg); ok = 0; } } while (0)
+
+        memset(blob, 0, sizeof blob);
+        memcpy(blob, "MWAVS001", 8);
+        off = 8;
+        blob[off++] = 2; blob[off++] = 0; blob[off++] = 0; blob[off++] = 0;
+        blob[off++] = 5; blob[off++] = 0; memcpy(blob + off, "a.mp3", 5); off += 5;
+        for (i = 0; i < WAVE_BUCKETS; i++) blob[off++] = (unsigned char)(i + 1);
+        blob[off++] = 6; blob[off++] = 0; memcpy(blob + off, "b.flac", 6); off += 6;
+        for (i = 0; i < WAVE_BUCKETS; i++) blob[off++] = (unsigned char)(200 - i);
+        for (i = 0; i < 32; i++) blob[off++] = 0;
+        cut = off - 32 - 10;      /* ten bytes into the second entry's peaks */
+
+        WCHECK(wave_sidecar_parse(blob, off, "a.mp3", got) == 1, "first entry found");
+        WCHECK(got[0] == 1 && got[95] == 96, "first entry peaks");
+        WCHECK(wave_sidecar_parse(blob, off, "b.flac", got) == 1, "second entry found");
+        WCHECK(got[0] == 200 && got[95] == 105, "second entry peaks");
+        WCHECK(wave_sidecar_parse(blob, off, "nope.mp3", got) == 0, "unknown name ignored");
+        WCHECK(wave_sidecar_parse(blob, 11, "a.mp3", got) == 0, "short blob refused");
+        {
+            unsigned char alien[64];
+            memcpy(alien, blob, sizeof alien);
+            alien[0] = 'X';
+            WCHECK(wave_sidecar_parse(alien, sizeof alien, "a.mp3", got) == 0, "foreign magic refused");
+        }
+        WCHECK(wave_sidecar_parse(blob, cut, "a.mp3", got) == 1, "truncated: earlier entry survives");
+        WCHECK(wave_sidecar_parse(blob, cut, "b.flac", got) == 0, "truncated: partial entry dropped");
+        {
+            unsigned char zero[16];
+            memcpy(zero, blob, sizeof zero);
+            zero[8] = zero[9] = zero[10] = zero[11] = 0;
+            WCHECK(wave_sidecar_parse(zero, sizeof zero, "a.mp3", got) == 0, "zero count refused");
+        }
+#undef WCHECK
+        if (ok) printf("waveform: parser ok\n");
+        else fails++;
+    }
+
+    if (getenv("MARIMO_WAVE_CHECK")) {
+        const char *dir = getenv("MARIMO_WAVE_CHECK");
+        DIR *d = opendir(dir);
+        if (!d) {
+            printf("waveform: %s not accessible — skipping the generator comparison\n", dir);
+        } else {
+            struct dirent *de;
+            int n = 0, exact = 0, absent = 0, worst = 0;
+            while ((de = readdir(d)) != NULL) {
+                const char *dot = strrchr(de->d_name, '.');
+                char path[Q_PATH_MAX];
+                unsigned char mine[WAVE_BUCKETS], theirs[WAVE_BUCKETS];
+                int k;
+                if (de->d_name[0] == '.' || !dot) continue;
+                if (strcasecmp(dot, ".flac") && strcasecmp(dot, ".mp3") &&
+                    strcasecmp(dot, ".m4a") && strcasecmp(dot, ".opus") &&
+                    strcasecmp(dot, ".ogg") && strcasecmp(dot, ".wav")) continue;
+                if (!wave_sidecar_read(dir, de->d_name, theirs)) { absent++; continue; }
+                snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+                if (!wave_decode(path, mine)) {          /* no cache: a real decode */
+                    printf("FAIL: waveform could not decode %s\n", de->d_name);
+                    fails++;
+                    continue;
+                }
+                n++;
+                for (k = 0; k < WAVE_BUCKETS; k++) {
+                    int delta = (int)mine[k] - (int)theirs[k];
+                    if (delta < 0) delta = -delta;
+                    if (delta > worst) worst = delta;
+                }
+                if (memcmp(mine, theirs, WAVE_BUCKETS) == 0) exact++;
+            }
+            closedir(d);
+            printf("waveform: %d/%d decoded files match the generator exactly "
+                   "(max delta %d, %d files not in the sidecar)\n", exact, n, worst, absent);
+            if (n == 0) printf("waveform: nothing in %s to compare against\n", dir);
+            else if (worst > 1) {
+                printf("FAIL: waveform decode disagrees with the generator by up to %d\n", worst);
+                fails++;
+            }
+        }
+    }
+
     /* queue logic */
     {
         Queue q;
@@ -3078,10 +3359,12 @@ static int screenshot(const char *out)
 {
     int rc;
     SDL_Surface *surf;
+    wave_sync();   /* deterministic capture: decode now rather than mid-frame */
     /* let the window map on wayland before grabbing pixels */
     for (int i = 0; i < 24; i++) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) { /* drain */ }
+        wave_poll();
         render();
         SDL_Delay(16);
     }
@@ -3355,6 +3638,8 @@ int main(int argc, char **argv)
                 break;
             }
         }
+        wave_poll();
+
         /* embedded art retry (metadata can lag) */
         if (A.art_retry > 0 && !A.art) {
             A.art_retry--;
