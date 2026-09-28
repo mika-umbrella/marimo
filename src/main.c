@@ -76,10 +76,12 @@ typedef struct {
     SDL_Rect seek, time;
     SDL_Rect b_shuf, b_rep, vol_icon, vol, vol_txt;
     SDL_Rect b_minimize, b_mini, b_gear, b_close;
-    SDL_Rect tabs_lib, tabs_q;
+    SDL_Rect tabs_lib, tabs_q, tabs_recap;
     SDL_Rect breadcrumb;
     SDL_Rect alpha;
     SDL_Rect list, status;
+    /* recap pane */
+    SDL_Rect recap, b_week, b_month, b_year, b_share;
 } Layout;
 
 typedef struct {
@@ -95,7 +97,12 @@ typedef struct {
     LibEntry *entries;
     int n_entries, scroll, sel, hover;
     int q_scroll, q_sel, q_hover;
-    int tab;                       /* 0 library, 1 queue */
+    int tab;                       /* 0 library, 1 queue, 2 recap */
+    /* recap screen */
+    int recap_mode;                /* RECAP_WEEK / RECAP_MONTH / RECAP_YEAR */
+    RecapResult recap;
+    int recap_valid;               /* recurrence cache: recomputed on entry/mode change */
+    int recap_scroll;
     SDL_Texture *art;
     int art_retry;
     int show_rem;                  /* time display: remaining */
@@ -447,6 +454,7 @@ static void layout(void)
         int ty = y0 + 8 + ART_SZ + 8;
         L->tabs_lib = (SDL_Rect){ PAD, ty, 84, TAB_H };
         L->tabs_q = (SDL_Rect){ PAD + 90, ty, 84, TAB_H };
+        L->tabs_recap = (SDL_Rect){ PAD + 180, ty, 84, TAB_H };
         L->breadcrumb.x = PAD; L->breadcrumb.y = ty + TAB_H;
         L->breadcrumb.w = w - 2 * PAD; L->breadcrumb.h = 20;
         L->list.x = 0; L->list.y = ty + TAB_H + (A.tab == 0 ? 20 : 0);
@@ -456,6 +464,14 @@ static void layout(void)
         L->alpha.w = A.tab == 0 ? ALPHA_W : 0; L->alpha.h = L->list.h;
         L->status.x = PAD; L->status.y = h - STATUS_H + 2;
         L->status.w = w - 2 * PAD; L->status.h = 16;
+        /* the recap pane owns the whole area under the tabs */
+        L->recap.x = PAD; L->recap.y = ty + TAB_H;
+        L->recap.w = w - 2 * PAD;
+        L->recap.h = h - L->recap.y - STATUS_H;
+        L->b_week  = (SDL_Rect){ L->recap.x, L->recap.y + 24, 62, 18 };
+        L->b_month = (SDL_Rect){ L->recap.x + 66, L->recap.y + 24, 62, 18 };
+        L->b_year  = (SDL_Rect){ L->recap.x + 132, L->recap.y + 24, 62, 18 };
+        L->b_share = (SDL_Rect){ L->recap.x + L->recap.w - 66, L->recap.y + 24, 66, 18 };
     }
 }
 
@@ -726,11 +742,11 @@ static void draw_playerbar(void)
 
 static void draw_tabs(void)
 {
-    SDL_Rect t[2] = { A.L.tabs_lib, A.L.tabs_q };
-    const char *names[2] = { "Library", "Queue" };
+    SDL_Rect t[3] = { A.L.tabs_lib, A.L.tabs_q, A.L.tabs_recap };
+    const char *names[3] = { "Library", "Queue", "Recap" };
     int mx, my;
     SDL_GetMouseState(&mx, &my);
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         if (inr(t[i], mx, my)) {
             SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
             SDL_RenderFillRect(A.ren, &t[i]);
@@ -875,6 +891,285 @@ static void draw_list_rows(int tab)
     if (tab == 1) q_unlock(&A.q);
 }
 
+/* ---------------- recap ---------------- */
+
+/* Body height measured during the last draw, so the wheel handler can clamp the
+ * scroll without duplicating the layout maths. */
+static int recap_content_h;
+
+/* Load the diary window for the current period and aggregate it. This runs on
+ * entering the pane or changing period, not every frame — a year of entries is
+ * thousands of JSON lines and the screen redraws at 60fps. */
+static void recap_refresh(void)
+{
+    long long w[4];
+    HistoryEntry *cur, *prev;
+    size_t nc = 0, np = 0;
+    recap_windows(A.recap_mode, (long long)time(NULL) * 1000, w);
+    cur = history_window(w[0], w[1], &nc);
+    prev = history_window(w[2], w[3], &np);
+    recap_compute(cur, nc, prev, np, A.recap_mode, &A.recap);
+    history_free(cur);
+    history_free(prev);
+    A.recap_valid = 1;
+}
+
+/* filled panel with a border; returns the content rect inside it */
+static SDL_Rect panel(SDL_Rect r)
+{
+    SDL_Rect inner = { r.x + 8, r.y + 6, r.w - 16, r.h - 12 };
+    SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
+    SDL_RenderFillRect(A.ren, &r);
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawRect(A.ren, &r);
+    return inner;
+}
+
+/* "label  [=======   ]  count" — the label is trimmed to half the row so the
+ * bar still reads when a track name is long. */
+static void bar_row(SDL_Rect r, const char *label, long long v, long long max, SDL_Color c)
+{
+    char lbl[300], num[32];
+    int lw, nw;
+    SDL_Rect track, filled;
+
+    fit_text(label, r.w / 2, lbl, sizeof lbl);
+    lw = font_w(&A.font, lbl, 1);
+    draw_text(r.x, r.y, lbl, C_DIM, 1);
+    snprintf(num, sizeof num, "%lld", v);
+    nw = font_w(&A.font, num, 1);
+
+    track.x = r.x + lw + 8;
+    track.y = r.y + 3;
+    track.w = r.w - lw - 8 - nw - 8;
+    if (track.w < 8) track.w = 8;
+    track.h = 8;
+    SDL_SetRenderDrawColor(A.ren, C_BG0.r, C_BG0.g, C_BG0.b, 255);
+    SDL_RenderFillRect(A.ren, &track);
+    if (max > 0 && v > 0) {
+        filled = track;
+        filled.w = (int)((double)v / (double)max * track.w);
+        if (filled.w < 1) filled.w = 1;
+        SDL_SetRenderDrawColor(A.ren, c.r, c.g, c.b, 255);
+        SDL_RenderFillRect(A.ren, &filled);
+    }
+    SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
+    SDL_RenderDrawRect(A.ren, &track);
+    draw_text(r.x + r.w - nw, r.y, num, C_TXT, 1);
+}
+
+static void draw_recap(void)
+{
+    Layout *L = &A.L;
+    RecapResult *r = &A.recap;
+    SDL_Rect body, cell;
+    int mx, my, i, y;
+    int cw, nrows;
+    long long max;
+    char buf[768], tmp[256];
+
+    if (!A.recap_valid) recap_refresh();
+    SDL_GetMouseState(&mx, &my);
+
+    /* title + period buttons + copy: fixed, above the scrolling body */
+    {
+        long long w[4];
+        struct tm tmv;
+        char mon[16];
+        recap_windows(A.recap_mode, (long long)time(NULL) * 1000, w);
+        recap_local_tm(w[0], &tmv);
+        strftime(mon, sizeof mon, "%b", &tmv);
+        if (A.recap_mode == RECAP_WEEK) {
+            char a[32], b[32];
+            struct tm t2;
+            snprintf(a, sizeof a, "%s %d", mon, tmv.tm_mday);
+            recap_local_tm(w[1] - 1, &t2);
+            strftime(mon, sizeof mon, "%b", &t2);
+            snprintf(b, sizeof b, "%s %d", mon, t2.tm_mday);
+            snprintf(buf, sizeof buf, "your week in marimo   \xc2\xb7   %s \xe2\x80\x93 %s", a, b);
+        } else if (A.recap_mode == RECAP_MONTH) {
+            char a[32];
+            strftime(a, sizeof a, "%B %Y", &tmv);      /* portable: no %-d here */
+            snprintf(buf, sizeof buf, "your month in marimo   \xc2\xb7   %s", a);
+        } else {
+            char a[16];
+            strftime(a, sizeof a, "%Y", &tmv);
+            snprintf(buf, sizeof buf, "your %s in marimo", a);
+        }
+    }
+    draw_text(L->recap.x, L->recap.y + 2, buf, C_ACC, 1);
+
+    {
+        SDL_Rect bs[3] = { L->b_week, L->b_month, L->b_year };
+        const char *names[3] = { "week", "month", "year" };
+        for (i = 0; i < 3; i++) {
+            SDL_Rect inner = panel(bs[i]);
+            int active = A.recap_mode == i;
+            SDL_Color c = active ? C_ACC : (inr(bs[i], mx, my) ? C_TXT : C_DIM);
+            draw_text(bs[i].x + (bs[i].w - font_w(&A.font, names[i], 1)) / 2, inner.y,
+                      names[i], c, 1);
+        }
+        {
+            SDL_Rect inner = panel(L->b_share);
+            const char *s = "copy";
+            SDL_Color c = inr(L->b_share, mx, my) ? C_ACC : C_TXT;
+            draw_text(L->b_share.x + (L->b_share.w - font_w(&A.font, s, 1)) / 2, inner.y,
+                      s, c, 1);
+        }
+    }
+
+    body.x = L->recap.x;
+    body.w = L->recap.w;
+    body.y = L->recap.y + 46;
+    body.h = L->recap.h - 46;
+    if (body.h < 20) body.h = 20;
+
+    SDL_RenderSetClipRect(A.ren, &body);
+    y = body.y - A.recap_scroll;
+
+    if (r->empty && r->tracks == 0) {
+        draw_text(body.x + 8, y + 40, "not enough plays to recap yet \xe2\x80\x94 go listen to something \xe2\x99\xaa",
+                  C_DIM, 1);
+        recap_content_h = 80;
+        SDL_RenderSetClipRect(A.ren, NULL);
+        return;
+    }
+
+    /* the four headline stats, side by side */
+    cw = (body.w - 3 * 4) / 4;
+    {
+        struct { char val[32]; const char *lab; } cells[4];
+        recap_fmt_hours(r->total_sec, 1, cells[0].val, sizeof cells[0].val);
+        cells[0].lab = "hours";
+        snprintf(cells[1].val, sizeof cells[1].val, "%lld", r->tracks);
+        cells[1].lab = "tracks";
+        snprintf(cells[2].val, sizeof cells[2].val, "%lld", r->artists);
+        cells[2].lab = "artists";
+        snprintf(cells[3].val, sizeof cells[3].val, "%lld", r->albums);
+        cells[3].lab = "albums";
+        for (i = 0; i < 4; i++) {
+            cell = (SDL_Rect){ body.x + i * (cw + 4), y, cw, 46 };
+            panel(cell);
+            draw_text(cell.x + 8, cell.y + 7, cells[i].val, C_ACC, 2);
+            draw_text(cell.x + 8, cell.y + 28, cells[i].lab, C_DIM, 1);
+        }
+    }
+    y += 54;
+
+    /* deltas vs the previous period */
+    if (r->hours != r->hours_prev || r->tracks != r->tracks_prev) {
+        const char *lab = A.recap_mode == RECAP_WEEK ? "vs last week"
+                        : A.recap_mode == RECAP_MONTH ? "vs last month" : "vs last year";
+        recap_delta(r->tracks_prev, r->tracks, "tracks", buf, sizeof buf);
+        recap_delta(r->hours_prev, r->hours, "hours", tmp, sizeof tmp);
+        snprintf(buf + strlen(buf), sizeof buf - strlen(buf), " \xc2\xb7 %s", tmp);
+        draw_text(body.x, y, lab, C_DIM, 1);
+        draw_text(body.x + font_w(&A.font, lab, 1) + 10, y, buf,
+                  (r->tracks >= r->tracks_prev) ? C_ACC : C_ERR, 1);
+        y += 18;
+    }
+
+    /* listening behaviour */
+    {
+        int n = 0;
+        draw_text(body.x, y, "listening behaviour", C_DIM, 1);
+        y += 16;
+        {
+            SDL_Rect card = { body.x, y, body.w, 0 };
+            int inner_y;
+            char rows[8][512];
+            SDL_Color cols[8];
+
+            snprintf(rows[n], sizeof rows[n], "mostly %s %s", recap_a_an(r->persona), r->persona);
+            cols[n++] = C_ACC;
+            if (r->streak_days > 0) {
+                snprintf(rows[n], sizeof rows[n], "streak                %d days in a row",
+                         r->streak_days);
+                cols[n++] = C_TXT;
+            }
+            if (r->longest_session_sec > 0) {
+                recap_fmt_hours(r->longest_session_sec, 1, tmp, sizeof tmp);
+                snprintf(rows[n], sizeof rows[n], "longest session       %s", tmp);
+                cols[n++] = C_TXT;
+            }
+            if (r->skip_rate > 0) {
+                snprintf(rows[n], sizeof rows[n], "skipped               %d%% of starts", r->skip_rate);
+                cols[n++] = C_ERR;
+            }
+            if (r->replay_king_plays >= 2) {
+                fit_text(r->replay_king, body.w / 2, tmp, sizeof tmp);
+                snprintf(rows[n], sizeof rows[n], "looped \"%s\" \xc3\x97%lld", tmp,
+                         r->replay_king_plays);
+                cols[n++] = C_ACC2;
+            }
+            if (r->most_skipped_plays > 0) {
+                fit_text(r->most_skipped, body.w / 2, tmp, sizeof tmp);
+                snprintf(rows[n], sizeof rows[n], "most-skipped \"%s\"", tmp);
+                cols[n++] = C_DIM;
+            }
+            snprintf(rows[n], sizeof rows[n], "new artists           %d%%", r->discovery_pct);
+            cols[n++] = C_TXT;
+
+            card.h = 12 + n * 14;
+            {
+                SDL_Rect inner = panel(card);
+                inner_y = inner.y;
+                for (i = 0; i < n; i++) {
+                    draw_text(inner.x, inner_y, rows[i], cols[i], 1);
+                    inner_y += 14;
+                }
+            }
+            y += card.h + 10;
+        }
+    }
+
+    /* bars: plays per day / week / month */
+    {
+        static const char *week_lab[7] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        static const char *mon_lab[5] = { "wk1", "wk2", "wk3", "wk4", "wk5" };
+        static const char *year_lab[12] = { "Ja", "Fe", "Mr", "Ap", "My", "Jn",
+                                            "Jl", "Au", "Se", "Oc", "No", "De" };
+        snprintf(buf, sizeof buf, "plays by %s",
+                 A.recap_mode == RECAP_WEEK ? "day"
+                 : A.recap_mode == RECAP_MONTH ? "week" : "month");
+        draw_text(body.x, y, buf, C_DIM, 1);
+        y += 16;
+        max = 1;
+        for (i = 0; i < r->n_bars; i++) if (r->bars[i] > max) max = r->bars[i];
+        for (i = 0; i < r->n_bars; i++) {
+            const char *lab = A.recap_mode == RECAP_WEEK ? week_lab[i]
+                            : A.recap_mode == RECAP_MONTH ? mon_lab[i] : year_lab[i];
+            bar_row((SDL_Rect){ body.x, y, body.w, 14 }, lab, r->bars[i], max, C_ACC);
+            y += 14;
+        }
+        y += 8;
+    }
+
+    /* top 5s */
+    for (nrows = 0; nrows < 3; nrows++) {
+        const RecapRow *list = nrows == 0 ? r->top_artists
+                             : nrows == 1 ? r->top_albums : r->top_tracks;
+        int cnt = nrows == 0 ? r->n_top_artists
+                : nrows == 1 ? r->n_top_albums : r->n_top_tracks;
+        const char *hdr = nrows == 0 ? "top artists" : nrows == 1 ? "top albums" : "top tracks";
+        if (cnt == 0) continue;
+        draw_text(body.x, y, hdr, C_DIM, 1);
+        y += 16;
+        max = 1;
+        for (i = 0; i < cnt; i++) if (list[i].count > max) max = list[i].count;
+        for (i = 0; i < cnt; i++) {
+            snprintf(buf, sizeof buf, "%d %.200s", i + 1, list[i].name);
+            bar_row((SDL_Rect){ body.x, y, body.w, 15 }, buf, list[i].count, max,
+                    nrows == 1 ? C_AMBER : C_ACC2);
+            y += 15;
+        }
+        y += 8;
+    }
+
+    SDL_RenderSetClipRect(A.ren, NULL);
+    recap_content_h = y - (body.y - A.recap_scroll);
+}
+
 static void draw_status(void)
 {
     SDL_Rect r = A.L.status;
@@ -987,9 +1282,13 @@ static void render(void)
     draw_playerbar();
     if (!A.mini) {
         draw_tabs();
-        if (A.tab == 0) draw_breadcrumb();
-        draw_list_rows(A.tab);
-        draw_alpha();
+        if (A.tab == 2) {
+            draw_recap();
+        } else {
+            if (A.tab == 0) draw_breadcrumb();
+            draw_list_rows(A.tab);
+            draw_alpha();
+        }
         draw_status();
     }
     if (A.modal) draw_modal();
@@ -1854,14 +2153,44 @@ static void handle_mouse(SDL_Event *ev)
                     layout();
                     return;
                 }
+                if (inr(A.L.tabs_recap, x, y) && ev->button.button == SDL_BUTTON_LEFT) {
+                    A.tab = 2;
+                    A.recap_valid = 0;        /* fresh numbers on entry */
+                    A.recap_scroll = 0;
+                    layout();
+                    return;
+                }
+                if (A.tab == 2 && ev->button.button == SDL_BUTTON_LEFT) {
+                    SDL_Rect bs[3] = { A.L.b_week, A.L.b_month, A.L.b_year };
+                    int k;
+                    for (k = 0; k < 3; k++) {
+                        if (inr(bs[k], x, y)) {
+                            A.recap_mode = k;
+                            A.recap_valid = 0;
+                            A.recap_scroll = 0;
+                            return;
+                        }
+                    }
+                    if (inr(A.L.b_share, x, y)) {
+                        /* the share card, onto the clipboard — the desktop's
+                         * version of android's ACTION_SEND chooser */
+                        long long w[4];
+                        char card[8192];
+                        recap_windows(A.recap_mode, (long long)time(NULL) * 1000, w);
+                        recap_share_card(A.recap_mode, w, &A.recap, card, sizeof card);
+                        SDL_SetClipboardText(card);
+                        set_status("recap copied to the clipboard");
+                        return;
+                    }
+                }
                 /* alphabet jump strip */
                 if (A.tab == 0 && ev->button.button == SDL_BUTTON_LEFT && inr(A.L.alpha, x, y)) {
                     A.alpha_drag = 1;
                     alpha_pick(y);
                     return;
                 }
-                /* list rows */
-                if (inr(A.L.list, x, y)) {
+                /* list rows (the recap pane draws and scrolls its own content) */
+                if (A.tab != 2 && inr(A.L.list, x, y)) {
                     int row = (y - A.L.list.y) / ROW_H;
                     int scroll = A.tab == 0 ? A.scroll : A.q_scroll;
                     row += scroll;
@@ -1902,6 +2231,16 @@ static void handle_mouse(SDL_Event *ev)
     } else if (ev->type == SDL_MOUSEWHEEL) {
         if (A.modal || A.mini) return;
         SDL_GetMouseState(&x, &y);
+        if (A.tab == 2) {
+            if (inr(A.L.recap, x, y)) {
+                int bodyh = A.L.recap.h - 46;
+                int over = recap_content_h - bodyh;
+                A.recap_scroll -= ev->wheel.y * 24;
+                if (A.recap_scroll > over) A.recap_scroll = over;
+                if (A.recap_scroll < 0) A.recap_scroll = 0;
+            }
+            return;
+        }
         if (inr(A.L.list, x, y)) {
             if (A.tab == 0) {
                 int vis = A.L.list.h / ROW_H;
@@ -2825,6 +3164,14 @@ int main(int argc, char **argv)
     }
     config_load(cfgfile);
     if (music) snprintf(cfg.music_dir, sizeof cfg.music_dir, "%s", music);
+
+    /* which pane to open on: 0 library (default), 1 queue, 2 recap. Exists so
+     * --screenshot can capture a pane that isn't the default, e.g.
+     *   MARIMO_TAB=2 ./build/marimo --screenshot recap.png */
+    {
+        const char *tb = getenv("MARIMO_TAB");
+        if (tb) A.tab = atoi(tb);
+    }
 
     /* the listening diary lives with the config, and has to be set up before the
      * --selftest/--headless dispatches below so those modes log too.
