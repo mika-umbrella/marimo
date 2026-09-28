@@ -3539,6 +3539,14 @@ static int selftest(const char *cfgfile_global)
                  * guessing at bare years eats real ones ("fartboner 2002"). It reads
                  * slightly redundant next to the year column — a known rough edge. */
                 { "171 - 2020 - 飽き性",                 "171", "2020 - 飽き性" },
+                /* the separator is a dash with space either side, whatever flavour
+                 * of dash and however many spaces — these are real folder names,
+                 * and the em/en ones used to come back unsplit */
+                { "Chikoi The Maid \xe2\x80\x94 (2025) From The Past to The Future [FLAC]",
+                  "Chikoi The Maid", "From The Past to The Future" },
+                { "Soft Kill \xe2\x80\x93 (2023) Metta World Peace [FLAC]",
+                  "Soft Kill", "Metta World Peace" },
+                { "\xe2\xa0\x80 -  (2023) [FLAC]", "\xe2\xa0\x80", "" },
             };
             char artist[256], title[256];
             for (i = 0; i < (int)(sizeof sc / sizeof sc[0]); i++) {
@@ -3550,8 +3558,8 @@ static int selftest(const char *cfgfile_global)
                 }
             }
         }
-        printf(ok ? "album: %d year vectors and %d splits ok\n" : "album: FAILED\n",
-               (int)(sizeof yc / sizeof yc[0]), 5);
+        printf(ok ? "album: %d year vectors, splits ok\n" : "album: FAILED\n",
+               (int)(sizeof yc / sizeof yc[0]));
         if (!ok) fails++;
     }
 

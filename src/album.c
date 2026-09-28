@@ -133,6 +133,32 @@ static int bracket_is_year(const char *open, const char *close)
     return first_year_in(content, 0) != 0;
 }
 
+/* Where the artist/title separator sits, or NULL. Any dash character counts —
+ * ascii '-', the en and em dashes, the horizontal bar, the minus sign — as long as
+ * it has a space on either side; how many spaces follow does not matter.
+ *
+ * Her folders mix all of them: 618 use '-', but 21 use an em or en dash, and
+ * looking only for the literal " - " meant those 21 showed the whole folder name as
+ * the title with the artist column reduced to a bare year. */
+static const char *split_sep(const char *s)
+{
+    const char *p;
+    for (p = s; *p; p++) {
+        int len = 0;
+        if (*p == '-') {
+            len = 1;
+        } else if ((unsigned char)p[0] == 0xE2 && p[1] && p[2]) {
+            unsigned char b = (unsigned char)p[1], c = (unsigned char)p[2];
+            if ((b == 0x80 && c >= 0x90 && c <= 0x95) || (b == 0x88 && c == 0x92)) len = 3;
+        }
+        if (!len) continue;
+        if (p == s || p[-1] != ' ') continue;          /* needs space before */
+        if (p[len] != ' ') continue;                   /* ...and after */
+        return p;
+    }
+    return NULL;
+}
+
 void album_split(const char *folder, char *artist, size_t asz,
                  char *title, size_t tsz)
 {
@@ -145,16 +171,22 @@ void album_split(const char *folder, char *artist, size_t asz,
     if (!folder) return;
     strip_braces(folder, work, sizeof work);
 
-    /* the artist is whatever sits before the first " - " */
-    dash = strstr(work, " - ");
+    /* the artist is whatever sits before the separator */
+    dash = split_sep(work);
     if (dash && artist && asz) {
         size_t alen = (size_t)(dash - work);
+        const char *rest = dash;
+        char tail[1024];
         if (alen >= asz) alen = asz - 1;
         memcpy(artist, work, alen);
         artist[alen] = 0;
         while (alen && artist[alen - 1] == ' ') artist[--alen] = 0;
-        work[0] = 0;
-        snprintf(work, sizeof work, "%s", dash + 3);
+        /* past the separator itself, then past whatever spaces it carries — one in
+         * most folders, two in one of hers, and the old code assumed exactly one */
+        rest += (*rest == '-') ? 1 : 3;
+        while (*rest == ' ') rest++;
+        snprintf(tail, sizeof tail, "%s", rest);
+        snprintf(work, sizeof work, "%s", tail);
     }
 
     /* the title keeps everything except bracket groups that are year/date, and
