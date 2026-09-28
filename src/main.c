@@ -1457,8 +1457,9 @@ static void draw_modal(void)
         }
     }
     draw_text(p.x + 10, p.y + p.h - 16,
-              "keys: last.fm/api/account/create   token: listenbrainz.org/profile   [esc] close",
-              C_DIM, 1);
+              "last.fm keys: last.fm/api/account/create", C_DIM, 1);
+    draw_text(p.x + 10, p.y + p.h - 16 + 10,
+              "listenbrainz token: listenbrainz.org/profile   [esc] close", C_DIM, 1);
 }
 
 /* Seconds for the drift. Frozen in capture mode: the noise would otherwise make
@@ -3667,6 +3668,42 @@ static int selftest(const char *cfgfile_global)
         if (q_next(&q) < 0 || q_next(&q) >= 4) { printf("FAIL: shuffle range\n"); fails++; }
         q_free(&q);
         printf("queue: %s\n", fails ? "FAIL" : "ok");
+    }
+
+    /* queue moves: the current track must stay the current track. That is the
+     * invariant the drag gesture rests on — get it wrong and the queue silently
+     * reports a different song as playing after a reorder. */
+    {
+        Queue mq;
+        int i, ok = 1;
+        q_init(&mq, 0, 1);
+        for (i = 0; i < 5; i++) {
+            char p[64], n[64];
+            snprintf(p, sizeof p, "/tmp/m%d.flac", i);
+            snprintf(n, sizeof n, "m%d", i);
+            q_add(&mq, p, n, 0);
+        }
+        mq.cur = 2;
+        /* dragging a row from above the current one to below it: cur follows down
+         * by one and still names the same path */
+        q_move(&mq, 0, 4);
+        if (mq.cur != 1 || strcmp(mq.items[1].name, "m2") || strcmp(mq.items[4].name, "m0")) ok = 0;
+        /* and back the other way shifts it up again */
+        q_move(&mq, 4, 0);
+        if (mq.cur != 2 || strcmp(mq.items[2].name, "m2")) ok = 0;
+        /* moving the current row carries it along */
+        q_move(&mq, 2, 0);
+        if (mq.cur != 0 || strcmp(mq.items[0].name, "m2")) ok = 0;
+        /* a move that does not cross it changes nothing */
+        q_move(&mq, 3, 4);
+        if (mq.cur != 0 || strcmp(mq.items[0].name, "m2")) ok = 0;
+        /* and the entries really are in the order the moves imply */
+        if (strcmp(mq.items[1].name, "m0") || strcmp(mq.items[2].name, "m1") ||
+            strcmp(mq.items[3].name, "m4") || strcmp(mq.items[4].name, "m3")) ok = 0;
+        q_free(&mq);
+        printf(ok ? "queue move: cur follows the track through reorders\n"
+                  : "FAIL: queue move lost the current track\n");
+        if (!ok) fails++;
     }
 
     /* alphabet jump target */

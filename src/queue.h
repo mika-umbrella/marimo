@@ -44,6 +44,11 @@ void q_clear(Queue *q);
 int  q_find(Queue *q, const char *path);                       /* index or -1 */
 int  q_add(Queue *q, const char *path, const char *name, long long size); /* returns index */
 void q_remove(Queue *q, int idx);
+/* Move an entry, keeping q->cur pointing at the SAME track. That is the whole
+ * reason this is not just a memmove and a shrug: dragging a row above the playing
+ * one shifts its index, and the queue would then report the wrong current item —
+ * the same class of desync as the live player playlist and queue.dat disagreeing. */
+void q_move(Queue *q, int from, int to);
 /* index to play after current (respects shuffle/repeat); -1 = stop.
  * does NOT move q->cur. */
 int  q_next(Queue *q);

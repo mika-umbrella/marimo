@@ -63,6 +63,35 @@ void q_remove(Queue *q, int idx)
     q->n--;
 }
 
+/* Move an entry, keeping q->cur pointing at the SAME track — see queue.h for why
+ * that matters: a drag above the playing row shifts its index, and the queue would
+ * otherwise report a different song as current. */
+void q_move(Queue *q, int from, int to)
+{
+    QItem tmp;
+    int i;
+
+    if (from == to) return;
+    if (from < 0 || from >= q->n || to < 0 || to >= q->n) return;
+
+    tmp = q->items[from];
+    if (from < to) {
+        for (i = from; i < to; i++) q->items[i] = q->items[i + 1];
+    } else {
+        for (i = from; i > to; i--) q->items[i] = q->items[i - 1];
+    }
+    q->items[to] = tmp;
+
+    /* cur is a track, not a position: follow it through the move */
+    if (q->cur == from) {
+        q->cur = to;
+    } else if (from < q->cur && to >= q->cur) {
+        q->cur--;
+    } else if (from > q->cur && to <= q->cur) {
+        q->cur++;
+    }
+}
+
 int q_next(Queue *q)
 {
     int i;
