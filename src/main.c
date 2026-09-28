@@ -702,18 +702,21 @@ static void draw_header(void)
 
     /* window buttons */
     SDL_Rect bs[4] = { A.L.b_minimize, A.L.b_mini, A.L.b_gear, A.L.b_close };
-    const char *glyphs[4] = { "\xe2\x80\x94",                              /* — */
-                              A.mini ? "\xe2\x96\xb2" : "\xe2\x96\xbe",  /* ▲ ▼ */
-                              "\xe2\x9a\x99",                              /* ⚙ */
-                              "\xe2\x9c\x95" };                           /* ✕ */
+    /* real icons, not Unifont glyphs: the header was the one place speaking a
+     * different language from the rest of the app — text beside pixel art */
+    int glyphs[4] = { ICON20_MINUS,
+                      A.mini ? ICON20_TRI_UP : ICON20_TRI_DOWN,
+                      ICON20_GEAR,
+                      ICON20_X };
     for (int i = 0; i < 4; i++) {
         int mx, my;
+        SDL_Color ic = i == 3 ? C_ERR : C_TXT;
         SDL_GetMouseState(&mx, &my);
         if (inr(bs[i], mx, my)) {
             SDL_SetRenderDrawColor(A.ren, C_BG2.r, C_BG2.g, C_BG2.b, 255);
             SDL_RenderFillRect(A.ren, &bs[i]);
         }
-        draw_text(bs[i].x + 4, bs[i].y + 2, glyphs[i], i == 3 ? C_ERR : C_TXT, 1);
+        font_draw_icon20(&A.font, bs[i].x + 2, bs[i].y + 2, glyphs[i], 1, ic.r, ic.g, ic.b);
     }
 }
 
@@ -771,7 +774,8 @@ static void draw_playerbar(void)
 
     /* transport buttons */
     SDL_Rect b[4] = { A.L.b_prev, A.L.b_play, A.L.b_stop, A.L.b_next };
-    int icons[4] = { ICON_PREV, playing ? ICON_PAUSE : ICON_PLAY, ICON_STOP, ICON_NEXT };
+    int icons[4] = { ICON20_PREV, playing ? ICON20_PAUSE : ICON20_PLAY,
+                     ICON20_STOP, ICON20_NEXT };
     int mx, my;
     SDL_GetMouseState(&mx, &my);
     for (int i = 0; i < 4; i++) {
@@ -781,7 +785,8 @@ static void draw_playerbar(void)
             SDL_RenderFillRect(A.ren, &b[i]);
             c = C_ACC;
         }
-        font_draw_icon(&A.font, b[i].x + 4, b[i].y + 3, icons[i], 1, c.r, c.g, c.b);
+        /* a 20px mask in a 24px button: 2px in from each side */
+        font_draw_icon20(&A.font, b[i].x + 2, b[i].y + 1, icons[i], 1, c.r, c.g, c.b);
     }
 
     /* seek */

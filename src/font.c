@@ -140,6 +140,8 @@ void font_free(Font *f)
         if (f->tt[i]) SDL_DestroyTexture(f->tt[i]);
     for (i = 0; i < N_ICONS; i++)
         if (f->icon_tex[i]) SDL_DestroyTexture(f->icon_tex[i]);
+    for (i = 0; i < N_ICONS20; i++)
+        if (f->icon20_tex[i]) SDL_DestroyTexture(f->icon20_tex[i]);
     free(f->tcp);
     free(f->tt);
     free(f->glyphs);
@@ -229,6 +231,40 @@ SDL_Texture *font_icon_tex(Font *f, int idx)
     SDL_FreeSurface(s);
     f->icon_tex[idx] = t;
     return t;
+}
+
+/* The 20px set, same mechanism with its own texture cache. The transport row and
+ * the window buttons are 24px wide, and the phone's stroke icons rasterise cleanly
+ * at that size where at 16px they break into dotted strokes. See icons20.h. */
+SDL_Texture *font_icon20_tex(Font *f, int idx)
+{
+    SDL_Surface *s;
+    SDL_Texture *t;
+    Uint32 *px;
+    if (f->icon20_tex[idx]) return f->icon20_tex[idx];
+    s = SDL_CreateRGBSurfaceWithFormat(0, 20, 20, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!s) return NULL;
+    SDL_LockSurface(s);
+    px = (Uint32 *)s->pixels;
+    for (int y = 0; y < 20; y++)
+        for (int x = 0; x < 20; x++)
+            px[y * 20 + x] = icon_art20[idx][y][x] == '#' ? 0xFFFFFFFF : 0x00000000;
+    SDL_UnlockSurface(s);
+    t = SDL_CreateTextureFromSurface(f->ren, s);
+    SDL_FreeSurface(s);
+    f->icon20_tex[idx] = t;
+    return t;
+}
+
+void font_draw_icon20(Font *f, int x, int y, int idx, int scale, Uint8 r, Uint8 g, Uint8 b)
+{
+    SDL_Texture *t = font_icon20_tex(f, idx);
+    SDL_Rect dst;
+    if (!t) return;
+    SDL_SetTextureColorMod(t, r, g, b);
+    if (scale < 1) scale = 1;
+    dst = (SDL_Rect){ x, y, 20 * scale, 20 * scale };
+    SDL_RenderCopy(f->ren, t, NULL, &dst);
 }
 
 void font_draw_icon(Font *f, int x, int y, int idx, int scale, Uint8 r, Uint8 g, Uint8 b)
