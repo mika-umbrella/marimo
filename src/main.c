@@ -4554,7 +4554,7 @@ int main(int argc, char **argv)
             return rc;
         }
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot_path = argv[++i];
-        else { fprintf(stderr, "usage: %s [--selftest|--headless=DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
+        else { fprintf(stderr, "usage: %s [--selftest|--headless DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
     }
 
     snprintf(cfgfile, sizeof cfgfile, "%s/.config/marimo/config.ini", home);
