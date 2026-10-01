@@ -92,24 +92,33 @@ void q_move(Queue *q, int from, int to)
     }
 }
 
-int q_next(Queue *q)
+/* index to play after `cur` (respects shuffle/repeat); -1 = stop.
+ * q_next() is this with the queue's own current row; q_next_from() takes the
+ * starting row explicitly, which the error path needs to step *over* a row that
+ * mpv could not play. */
+int q_next_from(Queue *q, int cur)
 {
     int i;
     if (q->n == 0) return -1;
-    if (q->repeat == 2 && q->cur >= 0) return q->cur;      /* repeat one */
+    if (q->repeat == 2 && cur >= 0) return cur;            /* repeat one */
     if (q->shuffle && q->n > 1) {
         /* pick a random different index */
         int r = rand() % (q->n - 1);
-        int target = q->cur >= 0 && r >= q->cur ? r + 1 : r;
-        if (q->cur >= 0 && target == q->cur) target = (target + 1) % q->n;
+        int target = cur >= 0 && r >= cur ? r + 1 : r;
+        if (cur >= 0 && target == cur) target = (target + 1) % q->n;
         return target;
     }
-    i = q->cur + 1;
+    i = cur + 1;
     if (i >= q->n) {
         if (q->repeat == 1) i = 0;
         else return -1;
     }
     return i;
+}
+
+int q_next(Queue *q)
+{
+    return q_next_from(q, q->cur);
 }
 
 int q_prev(Queue *q)

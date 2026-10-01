@@ -1810,16 +1810,42 @@ static void play_index(int i)
     set_status("\xe2\x96\xb6 %s", meta.title[0] ? meta.title : name);
 }
 
-static void on_end(int err)
+/* ev is what player_poll() returned: a mask of PE_EOF (a track ended) and/or
+ * PE_ERROR (mpv could not play the entry it moved on to).
+ *
+ * The two arrive together more often than it looks: a file that fails the
+ * instant it is opened — a read error on a network library, a file that vanished,
+ * a gapless preload that could not be read — reports its error a few milliseconds
+ * after the previous track's EOF, i.e. inside the same poll. Reading that pair as
+ * one "the track failed" fact (which is what a one-value `pending` did) threw the
+ * advance away, and the queue then stayed one row behind the audio for the rest of
+ * the session — the bar showing the previous track while the next one played, and
+ * every scrobble and diary line after that naming the wrong song. */
+static void on_end(int ev)
 {
     int next;
     diary_flush();                    /* the track that just finished */
     threshold_check();
-    if (err == 2) {
-        /* the entry failed — skip it explicitly */
-        next = q_next(&A.q);
+    if (ev & PE_ERROR) {
+        /* step over the row mpv could not play. On its own (a failure part-way
+         * through a track) that row is `cur`; alongside an EOF it is the row
+         * after `cur`, because mpv had already moved on when it failed. */
+        char bad[Q_NAME_MAX] = "";
+        int from = A.q.cur;
+        if (ev & PE_EOF) {
+            q_lock(&A.q);
+            from = q_next(&A.q);
+            q_unlock(&A.q);
+        }
+        q_lock(&A.q);
+        if (from >= 0 && from < A.q.n)
+            snprintf(bad, sizeof bad, "%s", A.q.items[from].meta.title[0]
+                     ? A.q.items[from].meta.title : A.q.items[from].name);
+        next = from >= 0 ? q_next_from(&A.q, from) : -1;
+        q_unlock(&A.q);
         if (next >= 0) {
-            play_index(next);
+            play_index(next);        /* mpv is idle after a failure — start it */
+            set_status("could not play %s — skipping", bad[0] ? bad : "that track");
         } else {
             q_lock(&A.q);
             A.q.cur = -1;
@@ -1870,7 +1896,7 @@ static void on_end(int err)
         q_lock(&A.q);
         A.q.cur = -1;
         q_unlock(&A.q);
-        set_status(err == 2 ? "playback error, queue finished" : "queue finished");
+        set_status("queue finished");
     }
 }
 
@@ -4000,6 +4026,12 @@ static int selftest(const char *cfgfile_global)
         if (q_find(&q, "/tmp/t3.flac") != 2) { printf("FAIL: find\n"); fails++; }
         q.shuffle = 1;
         if (q_next(&q) < 0 || q_next(&q) >= 4) { printf("FAIL: shuffle range\n"); fails++; }
+        q.shuffle = 0;
+        /* q_next_from: the same rule from a given row. This is what the error path
+         * uses to step *over* the row mpv could not play (and, with an EOF in the
+         * same frame, over the row after the one that just ended). */
+        if (q_next_from(&q, 1) != 2) { printf("FAIL: next_from\n"); fails++; }
+        if (q_next_from(&q, 3) != -1) { printf("FAIL: next_from at the end\n"); fails++; }
         q_free(&q);
         printf("queue: %s\n", fails ? "FAIL" : "ok");
     }

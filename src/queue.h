@@ -52,6 +52,8 @@ void q_move(Queue *q, int from, int to);
 /* index to play after current (respects shuffle/repeat); -1 = stop.
  * does NOT move q->cur. */
 int  q_next(Queue *q);
+/* the same rule starting from row `cur` rather than the queue's own current row */
+int  q_next_from(Queue *q, int cur);
 /* "previous": random when shuffling, else cur-1 (wraps if repeat all) */
 int  q_prev(Queue *q);
 

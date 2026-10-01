@@ -8,7 +8,7 @@
 
 struct Player {
     mpv_handle *h;
-    int pending;      /* 1 = EOF, 2 = error, waiting for main loop */
+    int pending;      /* mask of PE_* waiting for the main loop */
     int meta_dirty;   /* metadata property changed */
 };
 
@@ -302,9 +302,11 @@ int player_poll(Player *p)
             mpv_event_end_file *e = (mpv_event_end_file *)ev->data;
             /* reason STOP = manual stop or replace — never auto-advance */
             if (e->reason == MPV_END_FILE_REASON_EOF) {
-                p->pending = 1;
+                if (p->pending & PE_EOF)
+                    fprintf(stderr, "marimo: two tracks ended in one frame\n");
+                p->pending |= PE_EOF;
             } else if (e->reason == MPV_END_FILE_REASON_ERROR) {
-                p->pending = 2;
+                p->pending |= PE_ERROR;
                 fprintf(stderr, "marimo: playback error: %s\n",
                         mpv_error_string(e->error));
             }
