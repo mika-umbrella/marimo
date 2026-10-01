@@ -179,6 +179,18 @@ double player_length(Player *p)
     return d;
 }
 
+int player_current_path(Player *p, char *dst, size_t dstsz)
+{
+    char *v = NULL;
+    dst[0] = 0;
+    if (!p) return 0;
+    if (mpv_get_property(p->h, "path", MPV_FORMAT_STRING, &v) != 0 || !v)
+        return 0;
+    snprintf(dst, dstsz, "%s", v);
+    mpv_free(v);
+    return dst[0] != 0;
+}
+
 void player_seek(Player *p, double secs)
 {
     mpv_set_property(p->h, "time-pos", MPV_FORMAT_DOUBLE, &secs);

@@ -1054,6 +1054,7 @@ static void draw_list_rows(int tab)
             QItem *it = &A.q.items[idx];
             int nx = row.x + 20;
             if (idx == A.q.cur) draw_text(row.x + 4, y + 2, "\xe2\x96\xb6", C_ACC, 1);
+            else if (it->failed) draw_text(row.x + 4, y + 2, "!", C_ERR, 1);
             if (it->meta.track > 0) {
                 char num[24];
                 if (it->meta.disc > 0)
@@ -1077,9 +1078,11 @@ static void draw_list_rows(int tab)
                     snprintf(full, sizeof full, "%s", it->name);
                 int avail = row.x + row.w - 10 - durw - nx;
                 int trunc = fit_text(full, avail, disp, sizeof disp);
-                draw_text(nx, y + 2, disp, idx == A.q.cur ? C_ACC : C_TXT, 1);
-                if (hover && trunc) {
-                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s", full);
+                draw_text(nx, y + 2, disp, idx == A.q.cur ? C_ACC
+                          : it->failed ? C_ERR : C_TXT, 1);
+                if (hover && (trunc || it->failed)) {
+                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s%s", full,
+                             it->failed ? "  — could not be played" : "");
                     A.tip = 1;
                 }
             }
@@ -1769,6 +1772,10 @@ static void play_index(int i)
         q_unlock(&A.q);
         if (player_play_with_next(A.pl, path, next_path[0] ? next_path : NULL) < 0) {
             int n;
+            q_lock(&A.q);
+            if (i >= 0 && i < A.q.n) A.q.items[i].failed = 1;
+            q_unlock(&A.q);
+            fprintf(stderr, "marimo: %s marked unplayable, skipping\n", name);
             set_status("could not play %s — skipping", name);
             threshold_check();
             n = q_next(&A.q);
@@ -1797,6 +1804,7 @@ static void play_index(int i)
         A.q.items[i].scrobbled = 0;
         A.q.items[i].np_sent = 0;
         A.q.items[i].diary_logged = 0;   /* a replay is a listen too */
+        A.q.items[i].failed = 0;         /* it played this time */
     }
     q_unlock(&A.q);
     A.last_meta = meta;
@@ -1838,13 +1846,17 @@ static void on_end(int ev)
             q_unlock(&A.q);
         }
         q_lock(&A.q);
-        if (from >= 0 && from < A.q.n)
+        if (from >= 0 && from < A.q.n) {
+            A.q.items[from].failed = 1;
             snprintf(bad, sizeof bad, "%s", A.q.items[from].meta.title[0]
                      ? A.q.items[from].meta.title : A.q.items[from].name);
+        }
         next = from >= 0 ? q_next_from(&A.q, from) : -1;
         q_unlock(&A.q);
         if (next >= 0) {
             play_index(next);        /* mpv is idle after a failure — start it */
+            fprintf(stderr, "marimo: %s marked unplayable, skipping\n",
+                    bad[0] ? bad : "that track");
             set_status("could not play %s — skipping", bad[0] ? bad : "that track");
         } else {
             q_lock(&A.q);
@@ -2501,6 +2513,78 @@ static void stop_playback(void)
     A.q.cur = -1;
     q_unlock(&A.q);
     set_status("stopped");
+}
+
+/* Which queue row holds this file, or -1. The same file can legitimately sit in
+ * the queue twice, so a duplicate resolves to the copy at or after `from`. */
+static int queue_row_of(const char *path, int from)
+{
+    int hit = -1;
+    q_lock(&A.q);
+    for (int i = 0; i < A.q.n; i++) {
+        if (strcmp(A.q.items[i].path, path)) continue;
+        if (i >= from) { hit = i; break; }
+        if (hit < 0) hit = i;
+    }
+    q_unlock(&A.q);
+    return hit;
+}
+
+/* Keep the queue honest about which row is playing.
+ *
+ * mpv is the authority on that — `cur` is bookkeeping, and a boundary event the
+ * app could not see (see player_poll's PE_EOF | PE_ERROR) leaves it behind. Left
+ * alone it never heals: every later advance is one step behind too, so the player
+ * bar shows the previous track for the rest of the session and the scrobbles and
+ * diary lines name the wrong song. So when mpv is playing a row the app does not
+ * call current, adopt it.
+ *
+ * The ordinary boundary looks exactly like this for a few milliseconds — mpv has
+ * moved on, but its END_FILE is still sitting in the event queue until the next
+ * poll — and adopting then would make that poll advance a second time. Hence the
+ * delay: only a mismatch that survives a couple of frames *and* 150ms is drift.
+ * Running after the poll, `on_end` has already had its say for this frame. */
+static void playback_follow(void)
+{
+    static char seen[Q_PATH_MAX];
+    static int frames;
+    static Uint64 first;
+    char path[Q_PATH_MAX] = "";
+    int row;
+
+    if (!player_current_path(A.pl, path, sizeof path) || !path[0]) {
+        frames = 0;                      /* nothing playing: nothing to follow */
+        return;
+    }
+    q_lock(&A.q);
+    if (A.q.cur >= 0 && A.q.cur < A.q.n && !strcmp(A.q.items[A.q.cur].path, path))
+        row = A.q.cur;
+    else
+        row = -1;
+    q_unlock(&A.q);
+    if (row >= 0) { frames = 0; return; }        /* agrees with mpv */
+
+    if (strcmp(path, seen) != 0) {               /* a new candidate: start counting */
+        snprintf(seen, sizeof seen, "%s", path);
+        frames = 0;
+        first = SDL_GetTicks64();
+    }
+    if (++frames < 3 || SDL_GetTicks64() - first < 150) return;
+
+    row = queue_row_of(path, A.q.cur);
+    if (row < 0) { frames = 0; return; }         /* not one of ours: leave it */
+    q_lock(&A.q);
+    A.q.cur = row;
+    A.last_meta = A.q.items[row].meta;
+    snprintf(A.last_name, sizeof A.last_name, "%s",
+             A.last_meta.title[0] ? A.last_meta.title : A.q.items[row].name);
+    A.have_last = 1;
+    q_unlock(&A.q);
+    fprintf(stderr, "marimo: queue was a row behind; following \"%s\"\n", A.last_name);
+    A.last_time = 0;
+    load_art();
+    scrobble_now_playing(&A.last_meta);
+    frames = 0;
 }
 
 static void open_modal(void)
@@ -4721,6 +4805,18 @@ int main(int argc, char **argv)
             }
         }
     }
+    /* and a queue row that could not be played, which otherwise needs a broken
+     * file on a networked library to happen for real:
+     *   MARIMO_QUEUE_FAIL=1 MARIMO_TAB=1 ./build/marimo --screenshot q.png */
+    {
+        const char *qf = getenv("MARIMO_QUEUE_FAIL");
+        if (qf) {
+            int row = atoi(qf);
+            q_lock(&A.q);
+            if (row >= 0 && row < A.q.n) A.q.items[row].failed = 1;
+            q_unlock(&A.q);
+        }
+    }
     if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
@@ -4733,6 +4829,7 @@ int main(int argc, char **argv)
             if (pe) on_end(pe);
         }
         threshold_check();
+        playback_follow();
         /* mpris: publish state, then drain commands from the dbus thread */
         {
             MprisState ms;

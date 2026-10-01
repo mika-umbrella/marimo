@@ -37,6 +37,9 @@ void player_stop(Player *p);                       /* stops, keeps position stat
 int  player_state(Player *p);
 double player_time(Player *p);                     /* seconds, -1 if none */
 double player_length(Player *p);                   /* seconds, -1 if unknown */
+/* the file mpv is playing right now, as a full path (mpv's "path" property —
+ * "filename" is only the basename); returns 1 if there is one */
+int  player_current_path(Player *p, char *dst, size_t dstsz);
 void player_seek(Player *p, double secs);
 void player_set_volume(Player *p, int v);          /* 0..100 */
 void player_set_mute(Player *p, int on);

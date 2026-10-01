@@ -25,6 +25,7 @@ typedef struct {
     int scrobbled;   /* scrobble already submitted for this listen */
     int np_sent;     /* now-playing already sent */
     int diary_logged;/* listening diary already has this listen */
+    int failed;      /* mpv could not play it (see on_end); cleared when it does */
 } QItem;
 
 typedef struct {
