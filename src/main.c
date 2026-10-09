@@ -490,12 +490,15 @@ static void layout(void)
         }
 
         {
-            int sy = y0 + 120;   /* shuffle/repeat/volume sit under the waveform */
-            L->b_shuf = (SDL_Rect){ rx, sy, 18, 16 };
-            L->b_rep = (SDL_Rect){ rx + 20, sy, 18, 16 };
-            L->vol_icon = (SDL_Rect){ rx + 44, sy, 16, 16 };
-            L->vol.x = rx + 62; L->vol.y = sy + 5; L->vol.w = 58; L->vol.h = 6;
-            L->vol_txt.x = rx + 126; L->vol_txt.y = sy; L->vol_txt.w = 34; L->vol_txt.h = 16;
+            /* shuffle/repeat/volume sit under the waveform. They are 24x20 buttons
+             * like the transport row now: their icons moved to the 20px set, which
+             * is the only size the shuffle L-heads and the repeat loop survive at. */
+            int sy = y0 + 118;
+            L->b_shuf = (SDL_Rect){ rx, sy, 24, 20 };
+            L->b_rep = (SDL_Rect){ rx + 28, sy, 24, 20 };
+            L->vol_icon = (SDL_Rect){ rx + 56, sy, 24, 20 };
+            L->vol.x = rx + 84; L->vol.y = sy + 7; L->vol.w = 58; L->vol.h = 6;
+            L->vol_txt.x = rx + 148; L->vol_txt.y = sy + 2; L->vol_txt.w = 34; L->vol_txt.h = 16;
         }
     }
 
@@ -851,15 +854,15 @@ static void draw_playerbar(void)
         }
     }
 
-    /* sub row: shuffle / repeat / volume */
+    /* sub row: shuffle / repeat / volume — 20px icons, 2px in from the button edge
+     * the way the transport row places them */
     SDL_Color sc = A.q.shuffle ? C_ACC : C_DIM;
-    font_draw_icon(&A.font, A.L.b_shuf.x, A.L.b_shuf.y, ICON_SHUFFLE, 1, sc.r, sc.g, sc.b);
+    font_draw_icon20(&A.font, A.L.b_shuf.x + 2, A.L.b_shuf.y, ICON20_SHUFFLE, 1, sc.r, sc.g, sc.b);
     SDL_Color rc = A.q.repeat ? C_ACC : C_DIM;
-    font_draw_icon(&A.font, A.L.b_rep.x, A.L.b_rep.y, ICON_REPEAT, 1, rc.r, rc.g, rc.b);
-    if (A.q.repeat == 2)
-        draw_text(A.L.b_rep.x + 12, A.L.b_rep.y + 8, "1", C_ACC, 1);
+    font_draw_icon20(&A.font, A.L.b_rep.x + 2, A.L.b_rep.y,
+                     A.q.repeat == 2 ? ICON20_REPEAT_ONE : ICON20_REPEAT, 1, rc.r, rc.g, rc.b);
     SDL_Color vc = (A.vol > 0 && !A.muted) ? C_TXT : C_DIM;
-    font_draw_icon(&A.font, A.L.vol_icon.x, A.L.vol_icon.y, ICON_VOLUME, 1, vc.r, vc.g, vc.b);
+    font_draw_icon20(&A.font, A.L.vol_icon.x + 2, A.L.vol_icon.y, ICON20_VOLUME, 1, vc.r, vc.g, vc.b);
     draw_slider(A.L.vol, A.vol / 100.0, 1);
     {
         char vt[8];
