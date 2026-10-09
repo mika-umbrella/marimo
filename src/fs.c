@@ -11,6 +11,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#include <direct.h>   /* _wmkdir */
 
 wchar_t *fs_utf8_to_wide(const char *s)
 {
@@ -75,10 +76,21 @@ int fs_access(const char *path, int mode)
     return r;
 }
 
+int fs_mkdir(const char *path)
+{
+    wchar_t *wp = fs_utf8_to_wide(path);
+    int r;
+    if (!wp) return -1;
+    r = _wmkdir(wp);
+    free(wp);
+    return r;
+}
+
 #else /* POSIX */
 
 FILE *fs_fopen(const char *path, const char *mode) { return fopen(path, mode); }
 int   fs_stat(const char *path, struct stat *st)   { return stat(path, st); }
 int   fs_access(const char *path, int mode)        { return access(path, mode); }
+int   fs_mkdir(const char *path)                   { return mkdir(path, 0755); }
 
 #endif

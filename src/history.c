@@ -1,6 +1,7 @@
 /* history.c — listening diary: append-only jsonl, gzip year archives, tolerant
  * reads. See history.h for the format and the reasoning behind the fields. */
 #include "history.h"
+#include "fs.h"
 #include "cJSON.h"
 
 #include <pthread.h>
@@ -38,43 +39,78 @@ static int year_of(long long ms)
 
 /* ---------------- writing ---------------- */
 
-/* append a JSON string literal, escaped the way HistoryDiary.line() does */
-static void put_q(FILE *fp, const char *s)
+/* A growing string. history_line used to build its line through open_memstream(),
+ * which is a glibc extension mingw does not have — the Windows build is the reason
+ * this is hand-rolled. Always NUL-terminated, so callers can fputs() the result. */
+typedef struct {
+    char *p;
+    size_t len, cap;
+} SB;
+
+static int sb_put(SB *b, const char *s, size_t n)
 {
-    fputc('"', fp);
+    if (b->len + n + 1 > b->cap) {
+        size_t want = b->cap ? b->cap : 128;
+        char *np;
+        while (want < b->len + n + 1) want *= 2;
+        np = (char *)realloc(b->p, want);
+        if (!np) return -1;
+        b->p = np;
+        b->cap = want;
+    }
+    memcpy(b->p + b->len, s, n);
+    b->len += n;
+    b->p[b->len] = 0;
+    return 0;
+}
+
+static int sb_puts(SB *b, const char *s) { return sb_put(b, s, strlen(s)); }
+
+/* append a JSON string literal, escaped the way HistoryDiary.line() does */
+static int sb_q(SB *b, const char *s)
+{
+    if (sb_put(b, "\"", 1) != 0) return -1;
     for (; s && *s; s++) {
         unsigned char c = (unsigned char)*s;
+        char esc[8];
         switch (c) {
-        case '"':  fputs("\\\"", fp); break;
-        case '\\': fputs("\\\\", fp); break;
-        case '\n': fputs("\\n", fp); break;
-        case '\r': fputs("\\r", fp); break;
-        case '\t': fputs("\\t", fp); break;
+        case '"':  if (sb_puts(b, "\\\"")) return -1; break;
+        case '\\': if (sb_puts(b, "\\\\")) return -1; break;
+        case '\n': if (sb_puts(b, "\\n")) return -1; break;
+        case '\r': if (sb_puts(b, "\\r")) return -1; break;
+        case '\t': if (sb_puts(b, "\\t")) return -1; break;
         default:
-            if (c < 0x20) fprintf(fp, "\\u%04x", c);
-            else fputc(c, fp);
+            if (c < 0x20) {
+                snprintf(esc, sizeof esc, "\\u%04x", c);
+                if (sb_puts(b, esc)) return -1;
+            } else if (sb_put(b, (const char *)&c, 1)) {
+                return -1;
+            }
         }
     }
-    fputc('"', fp);
+    return sb_put(b, "\"", 1);
 }
 
 char *history_line(const char *artist, const char *album, const char *title,
                    long long played_ms, long long dur_ms, long long ts)
 {
-    char *buf = NULL;
-    size_t cap = 0;
-    FILE *fp = open_memstream(&buf, &cap);
-    if (!fp) return NULL;
-    fprintf(fp, "{\"ts\":%lld,\"artist\":", ts);
-    put_q(fp, artist ? artist : "");
-    fputs(",\"album\":", fp);
-    put_q(fp, album ? album : "");
-    fputs(",\"title\":", fp);
-    put_q(fp, title ? title : "");
-    fprintf(fp, ",\"sec\":%lld,\"dur\":%lld}\n", played_ms / 1000,
-            dur_ms > 0 ? dur_ms : 0);
-    fclose(fp);
-    return buf;                       /* caller frees */
+    SB b = { NULL, 0, 0 };
+    char num[96];
+
+    snprintf(num, sizeof num, "{\"ts\":%lld,\"artist\":", ts);
+    if (sb_puts(&b, num)) goto fail;
+    if (sb_q(&b, artist ? artist : "")) goto fail;
+    if (sb_puts(&b, ",\"album\":")) goto fail;
+    if (sb_q(&b, album ? album : "")) goto fail;
+    if (sb_puts(&b, ",\"title\":")) goto fail;
+    if (sb_q(&b, title ? title : "")) goto fail;
+    snprintf(num, sizeof num, ",\"sec\":%lld,\"dur\":%lld}\n", played_ms / 1000,
+             dur_ms > 0 ? dur_ms : 0);
+    if (sb_puts(&b, num)) goto fail;
+    return b.p;                       /* caller frees */
+fail:
+    free(b.p);
+    return NULL;
 }
 
 static int append_file(const char *path, const char *line)
@@ -269,11 +305,7 @@ void history_init(const char *dir)
 {
     if (!dir || !dir[0]) return;
     snprintf(h_dir, sizeof h_dir, "%s", dir);
-#ifndef _WIN32
-    mkdir(h_dir, 0755);               /* the app's config dir usually exists */
-#else
-    _mkdir(h_dir);
-#endif
+    fs_mkdir(h_dir);                  /* the app's config dir usually exists */
 }
 
 void history_shutdown(void)

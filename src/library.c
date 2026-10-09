@@ -9,61 +9,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <unistd.h>
-#ifdef _WIN32
-/* minimal dirent shim over FindFirstFileW (folder browser only).
- * The ANSI (A) APIs use the system codepage and mangle non-ascii names;
- * the W APIs give UTF-16, which we convert to UTF-8 for the app. */
-#include <windows.h>
-#include "fs.h"
-typedef struct DIR DIR;
-struct dirent { char d_name[512]; };
-struct DIR {
-    HANDLE h;
-    WIN32_FIND_DATAW fd;
-    struct dirent ent;
-    int first;
-};
-static DIR *opendir(const char *path)
-{
-    wchar_t *wpat, *wp;
-    DIR *d = (DIR *)calloc(1, sizeof(DIR));
-    size_t plen;
-    if (!d) return NULL;
-    plen = strlen(path);
-    if (plen > L_PATH_MAX - 2) { free(d); return NULL; }
-    wp = fs_utf8_to_wide(path);
-    if (!wp) { free(d); return NULL; }
-    wpat = (wchar_t *)malloc((plen + 3) * sizeof(wchar_t));
-    if (!wpat) { free(wp); free(d); return NULL; }
-    wcscpy(wpat, wp);
-    wcscat(wpat, L"\\*");
-    free(wp);
-    d->h = FindFirstFileW(wpat, &d->fd);
-    free(wpat);
-    if (d->h == INVALID_HANDLE_VALUE) { free(d); return NULL; }
-    d->first = 1;
-    return d;
-}
-static struct dirent *readdir(DIR *d)
-{
-    if (!d->first && !FindNextFileW(d->h, &d->fd)) return NULL;
-    d->first = 0;
-    {
-        char *u = fs_wide_to_utf8(d->fd.cFileName);
-        if (!u) return NULL;
-        snprintf(d->ent.d_name, sizeof d->ent.d_name, "%s", u);
-        free(u);
-    }
-    return &d->ent;
-}
-static int closedir(DIR *d)
-{
-    if (d) { FindClose(d->h); free(d); }
-    return 0;
-}
-#else
-#include <dirent.h>
-#endif
+#include "dirwin.h"
 
 static const char *audio_exts[] = {
     ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav",
@@ -108,8 +54,8 @@ static void add_entry(LibEntry **ents, int *n, int *cap, int kind,
 
 int lib_scan(const char *dir, LibEntry **out)
 {
-    DIR *d = opendir(dir);
-    struct dirent *de;
+    MD_DIR *d = md_opendir(dir);
+    const char *nm;
     LibEntry *ents = NULL;
     int n = 0, cap = 0;
     char parent[L_PATH_MAX];
@@ -128,18 +74,18 @@ int lib_scan(const char *dir, LibEntry **out)
     }
     add_entry(&ents, &n, &cap, L_UP, "..", parent, 0);
 
-    while ((de = readdir(d))) {
+    while ((nm = md_readdir(d))) {
         char path[L_PATH_MAX];
         struct stat st;
-        if (de->d_name[0] == '.') continue;
-        snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+        if (nm[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s", dir, nm);
         if (fs_stat(path, &st)) continue;
         if (S_ISDIR(st.st_mode))
-            add_entry(&ents, &n, &cap, L_DIR, de->d_name, path, 0);
-        else if (S_ISREG(st.st_mode) && lib_is_audio(de->d_name))
-            add_entry(&ents, &n, &cap, L_FILE, de->d_name, path, (long long)st.st_size);
+            add_entry(&ents, &n, &cap, L_DIR, nm, path, 0);
+        else if (S_ISREG(st.st_mode) && lib_is_audio(nm))
+            add_entry(&ents, &n, &cap, L_FILE, nm, path, (long long)st.st_size);
     }
-    closedir(d);
+    md_closedir(d);
     qsort(ents, n, sizeof(LibEntry), ent_cmp);
     *out = ents;
     return n;
@@ -266,8 +212,8 @@ int cover_rank(const char *name, const char *folder)
  * Several unmatched images decline, as they always have. */
 int lib_find_cover(const char *dir, char *out, int outsz)
 {
-    DIR *d = opendir(dir);
-    struct dirent *de;
+    MD_DIR *d = md_opendir(dir);
+    const char *nm;
     char best[512] = "", only[512] = "";
     const char *folder;
     int best_rank = -1, n_img = 0;
@@ -275,23 +221,23 @@ int lib_find_cover(const char *dir, char *out, int outsz)
     if (!d) return -1;
     folder = strrchr(dir, '/');
     folder = folder ? folder + 1 : dir;
-    while ((de = readdir(d))) {
+    while ((nm = md_readdir(d))) {
         int r;
-        if (de->d_name[0] == '.') continue;
-        if (!has_img_ext(de->d_name)) continue;
+        if (nm[0] == '.') continue;
+        if (!has_img_ext(nm)) continue;
         n_img++;
-        if (n_img == 1) snprintf(only, sizeof only, "%s", de->d_name);
-        r = cover_rank(de->d_name, folder);
+        if (n_img == 1) snprintf(only, sizeof only, "%s", nm);
+        r = cover_rank(nm, folder);
         if (r < 0) continue;
         /* best rank wins; ties break on the name so the answer cannot depend on
          * the order the filesystem happens to hand entries back */
         if (best_rank < 0 || r < best_rank ||
-            (r == best_rank && strcmp(de->d_name, best) < 0)) {
+            (r == best_rank && strcmp(nm, best) < 0)) {
             best_rank = r;
-            snprintf(best, sizeof best, "%s", de->d_name);
+            snprintf(best, sizeof best, "%s", nm);
         }
     }
-    closedir(d);
+    md_closedir(d);
 
     if (best_rank < 0) {
         if (n_img != 1 || !only[0]) return -1;

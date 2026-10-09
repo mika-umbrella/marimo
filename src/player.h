@@ -37,6 +37,9 @@ void player_stop(Player *p);                       /* stops, keeps position stat
 int  player_state(Player *p);
 double player_time(Player *p);                     /* seconds, -1 if none */
 double player_length(Player *p);                   /* seconds, -1 if unknown */
+/* the file mpv is playing right now, as a full path (mpv's "path" property —
+ * "filename" is only the basename); returns 1 if there is one */
+int  player_current_path(Player *p, char *dst, size_t dstsz);
 void player_seek(Player *p, double secs);
 void player_set_volume(Player *p, int v);          /* 0..100 */
 void player_set_mute(Player *p, int on);
@@ -48,7 +51,17 @@ int  player_meta(Player *p, Meta *meta);
 /* embedded album art as base64 string (malloc'd, caller frees) or NULL */
 char *player_embedded_art(Player *p);
 
-/* call every frame. returns 1 = current track ended (EOF), 2 = error */
+/* call every frame. Returns a mask of what happened since the last call:
+ *   PE_EOF   a track ended normally (the queue should advance one row)
+ *   PE_ERROR mpv could not play the entry it was on (that row must be skipped)
+ * Both can be set in the same frame: a file that fails the instant it starts
+ * reports its error a few milliseconds after the previous track's EOF, so one
+ * poll can carry a track ending *and* its successor failing. They are two
+ * different facts and must not be collapsed into one value — doing that used to
+ * lose the advance and leave the player bar one row behind the audio for the
+ * rest of the session. */
+#define PE_EOF   1
+#define PE_ERROR 2
 int  player_poll(Player *p);
 /* 1 if mpv reported a metadata update since last check (clears the flag) */
 int  player_meta_dirty(Player *p);

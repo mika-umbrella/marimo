@@ -26,7 +26,7 @@
 #include <math.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <dirent.h>
+#include "dirwin.h"
 #include <strings.h>
 
 #include "font.h"
@@ -490,12 +490,15 @@ static void layout(void)
         }
 
         {
-            int sy = y0 + 120;   /* shuffle/repeat/volume sit under the waveform */
-            L->b_shuf = (SDL_Rect){ rx, sy, 18, 16 };
-            L->b_rep = (SDL_Rect){ rx + 20, sy, 18, 16 };
-            L->vol_icon = (SDL_Rect){ rx + 44, sy, 16, 16 };
-            L->vol.x = rx + 62; L->vol.y = sy + 5; L->vol.w = 58; L->vol.h = 6;
-            L->vol_txt.x = rx + 126; L->vol_txt.y = sy; L->vol_txt.w = 34; L->vol_txt.h = 16;
+            /* shuffle/repeat/volume sit under the waveform. They are 24x20 buttons
+             * like the transport row now: their icons moved to the 20px set, which
+             * is the only size the shuffle L-heads and the repeat loop survive at. */
+            int sy = y0 + 118;
+            L->b_shuf = (SDL_Rect){ rx, sy, 24, 20 };
+            L->b_rep = (SDL_Rect){ rx + 28, sy, 24, 20 };
+            L->vol_icon = (SDL_Rect){ rx + 56, sy, 24, 20 };
+            L->vol.x = rx + 84; L->vol.y = sy + 7; L->vol.w = 58; L->vol.h = 6;
+            L->vol_txt.x = rx + 148; L->vol_txt.y = sy + 2; L->vol_txt.w = 34; L->vol_txt.h = 16;
         }
     }
 
@@ -737,17 +740,41 @@ static void draw_header(void)
 static void draw_art(void)
 {
     SDL_Rect r = A.L.art;
+    SDL_Rect dst = r;
+    if (A.art) {
+        /* Fit at the art's own ratio, centred in the box, the way the phone's player
+         * does (fitCenter) — a non-square cover used to be squashed into ART_SZ^2.
+         * A 1187x772 cover letterboxes top and bottom instead of stretching. */
+        int tw = 0, th = 0;
+        if (SDL_QueryTexture(A.art, NULL, NULL, &tw, &th) == 0 && tw > 0 && th > 0) {
+            double ar = (double)tw / (double)th;
+            double box = (double)r.w / (double)r.h;
+            if (ar > box) {
+                dst.w = r.w;
+                dst.h = (int)(r.w / ar + 0.5);
+            } else {
+                dst.h = r.h;
+                dst.w = (int)(r.h * ar + 0.5);
+            }
+            dst.x = r.x + (r.w - dst.w) / 2;
+            dst.y = r.y + (r.h - dst.h) / 2;
+        }
+    }
+    /* The backing and the border both wrap the *drawn* rect, not the whole ART_SZ
+     * box: a portrait or landscape cover gets a panel the shape of the cover, with
+     * no black square around it. With no art, dst stays the full box and the note
+     * sits in it as before. */
     SDL_SetRenderDrawColor(A.ren, 0, 0, 0, 255);
-    SDL_RenderFillRect(A.ren, &r);
+    SDL_RenderFillRect(A.ren, &dst);
     if (A.art) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");   /* smooth art */
-        SDL_RenderCopy(A.ren, A.art, NULL, &r);
+        SDL_RenderCopy(A.ren, A.art, NULL, &dst);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     } else {
-        draw_text(r.x + 8, r.y + 8, "\xe2\x99\xaa", C_DIM, 5);  /* ♪ */
+        draw_text(dst.x + 8, dst.y + 8, "\xe2\x99\xaa", C_DIM, 5);  /* ♪ */
     }
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
-    SDL_RenderDrawRect(A.ren, &r);
+    SDL_RenderDrawRect(A.ren, &dst);
 }
 
 static void draw_playerbar(void)
@@ -827,15 +854,15 @@ static void draw_playerbar(void)
         }
     }
 
-    /* sub row: shuffle / repeat / volume */
+    /* sub row: shuffle / repeat / volume — 20px icons, 2px in from the button edge
+     * the way the transport row places them */
     SDL_Color sc = A.q.shuffle ? C_ACC : C_DIM;
-    font_draw_icon(&A.font, A.L.b_shuf.x, A.L.b_shuf.y, ICON_SHUFFLE, 1, sc.r, sc.g, sc.b);
+    font_draw_icon20(&A.font, A.L.b_shuf.x + 2, A.L.b_shuf.y, ICON20_SHUFFLE, 1, sc.r, sc.g, sc.b);
     SDL_Color rc = A.q.repeat ? C_ACC : C_DIM;
-    font_draw_icon(&A.font, A.L.b_rep.x, A.L.b_rep.y, ICON_REPEAT, 1, rc.r, rc.g, rc.b);
-    if (A.q.repeat == 2)
-        draw_text(A.L.b_rep.x + 12, A.L.b_rep.y + 8, "1", C_ACC, 1);
+    font_draw_icon20(&A.font, A.L.b_rep.x + 2, A.L.b_rep.y,
+                     A.q.repeat == 2 ? ICON20_REPEAT_ONE : ICON20_REPEAT, 1, rc.r, rc.g, rc.b);
     SDL_Color vc = (A.vol > 0 && !A.muted) ? C_TXT : C_DIM;
-    font_draw_icon(&A.font, A.L.vol_icon.x, A.L.vol_icon.y, ICON_VOLUME, 1, vc.r, vc.g, vc.b);
+    font_draw_icon20(&A.font, A.L.vol_icon.x + 2, A.L.vol_icon.y, ICON20_VOLUME, 1, vc.r, vc.g, vc.b);
     draw_slider(A.L.vol, A.vol / 100.0, 1);
     {
         char vt[8];
@@ -1054,6 +1081,7 @@ static void draw_list_rows(int tab)
             QItem *it = &A.q.items[idx];
             int nx = row.x + 20;
             if (idx == A.q.cur) draw_text(row.x + 4, y + 2, "\xe2\x96\xb6", C_ACC, 1);
+            else if (it->failed) draw_text(row.x + 4, y + 2, "!", C_ERR, 1);
             if (it->meta.track > 0) {
                 char num[24];
                 if (it->meta.disc > 0)
@@ -1077,9 +1105,11 @@ static void draw_list_rows(int tab)
                     snprintf(full, sizeof full, "%s", it->name);
                 int avail = row.x + row.w - 10 - durw - nx;
                 int trunc = fit_text(full, avail, disp, sizeof disp);
-                draw_text(nx, y + 2, disp, idx == A.q.cur ? C_ACC : C_TXT, 1);
-                if (hover && trunc) {
-                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s", full);
+                draw_text(nx, y + 2, disp, idx == A.q.cur ? C_ACC
+                          : it->failed ? C_ERR : C_TXT, 1);
+                if (hover && (trunc || it->failed)) {
+                    snprintf(A.tip_buf, sizeof A.tip_buf, "%s%s", full,
+                             it->failed ? "  — could not be played" : "");
                     A.tip = 1;
                 }
             }
@@ -1769,6 +1799,10 @@ static void play_index(int i)
         q_unlock(&A.q);
         if (player_play_with_next(A.pl, path, next_path[0] ? next_path : NULL) < 0) {
             int n;
+            q_lock(&A.q);
+            if (i >= 0 && i < A.q.n) A.q.items[i].failed = 1;
+            q_unlock(&A.q);
+            fprintf(stderr, "marimo: %s marked unplayable, skipping\n", name);
             set_status("could not play %s — skipping", name);
             threshold_check();
             n = q_next(&A.q);
@@ -1797,6 +1831,7 @@ static void play_index(int i)
         A.q.items[i].scrobbled = 0;
         A.q.items[i].np_sent = 0;
         A.q.items[i].diary_logged = 0;   /* a replay is a listen too */
+        A.q.items[i].failed = 0;         /* it played this time */
     }
     q_unlock(&A.q);
     A.last_meta = meta;
@@ -1810,16 +1845,46 @@ static void play_index(int i)
     set_status("\xe2\x96\xb6 %s", meta.title[0] ? meta.title : name);
 }
 
-static void on_end(int err)
+/* ev is what player_poll() returned: a mask of PE_EOF (a track ended) and/or
+ * PE_ERROR (mpv could not play the entry it moved on to).
+ *
+ * The two arrive together more often than it looks: a file that fails the
+ * instant it is opened — a read error on a network library, a file that vanished,
+ * a gapless preload that could not be read — reports its error a few milliseconds
+ * after the previous track's EOF, i.e. inside the same poll. Reading that pair as
+ * one "the track failed" fact (which is what a one-value `pending` did) threw the
+ * advance away, and the queue then stayed one row behind the audio for the rest of
+ * the session — the bar showing the previous track while the next one played, and
+ * every scrobble and diary line after that naming the wrong song. */
+static void on_end(int ev)
 {
     int next;
     diary_flush();                    /* the track that just finished */
     threshold_check();
-    if (err == 2) {
-        /* the entry failed — skip it explicitly */
-        next = q_next(&A.q);
+    if (ev & PE_ERROR) {
+        /* step over the row mpv could not play. On its own (a failure part-way
+         * through a track) that row is `cur`; alongside an EOF it is the row
+         * after `cur`, because mpv had already moved on when it failed. */
+        char bad[Q_NAME_MAX] = "";
+        int from = A.q.cur;
+        if (ev & PE_EOF) {
+            q_lock(&A.q);
+            from = q_next(&A.q);
+            q_unlock(&A.q);
+        }
+        q_lock(&A.q);
+        if (from >= 0 && from < A.q.n) {
+            A.q.items[from].failed = 1;
+            snprintf(bad, sizeof bad, "%s", A.q.items[from].meta.title[0]
+                     ? A.q.items[from].meta.title : A.q.items[from].name);
+        }
+        next = from >= 0 ? q_next_from(&A.q, from) : -1;
+        q_unlock(&A.q);
         if (next >= 0) {
-            play_index(next);
+            play_index(next);        /* mpv is idle after a failure — start it */
+            fprintf(stderr, "marimo: %s marked unplayable, skipping\n",
+                    bad[0] ? bad : "that track");
+            set_status("could not play %s — skipping", bad[0] ? bad : "that track");
         } else {
             q_lock(&A.q);
             A.q.cur = -1;
@@ -1870,7 +1935,7 @@ static void on_end(int err)
         q_lock(&A.q);
         A.q.cur = -1;
         q_unlock(&A.q);
-        set_status(err == 2 ? "playback error, queue finished" : "queue finished");
+        set_status("queue finished");
     }
 }
 
@@ -2475,6 +2540,78 @@ static void stop_playback(void)
     A.q.cur = -1;
     q_unlock(&A.q);
     set_status("stopped");
+}
+
+/* Which queue row holds this file, or -1. The same file can legitimately sit in
+ * the queue twice, so a duplicate resolves to the copy at or after `from`. */
+static int queue_row_of(const char *path, int from)
+{
+    int hit = -1;
+    q_lock(&A.q);
+    for (int i = 0; i < A.q.n; i++) {
+        if (strcmp(A.q.items[i].path, path)) continue;
+        if (i >= from) { hit = i; break; }
+        if (hit < 0) hit = i;
+    }
+    q_unlock(&A.q);
+    return hit;
+}
+
+/* Keep the queue honest about which row is playing.
+ *
+ * mpv is the authority on that — `cur` is bookkeeping, and a boundary event the
+ * app could not see (see player_poll's PE_EOF | PE_ERROR) leaves it behind. Left
+ * alone it never heals: every later advance is one step behind too, so the player
+ * bar shows the previous track for the rest of the session and the scrobbles and
+ * diary lines name the wrong song. So when mpv is playing a row the app does not
+ * call current, adopt it.
+ *
+ * The ordinary boundary looks exactly like this for a few milliseconds — mpv has
+ * moved on, but its END_FILE is still sitting in the event queue until the next
+ * poll — and adopting then would make that poll advance a second time. Hence the
+ * delay: only a mismatch that survives a couple of frames *and* 150ms is drift.
+ * Running after the poll, `on_end` has already had its say for this frame. */
+static void playback_follow(void)
+{
+    static char seen[Q_PATH_MAX];
+    static int frames;
+    static Uint64 first;
+    char path[Q_PATH_MAX] = "";
+    int row;
+
+    if (!player_current_path(A.pl, path, sizeof path) || !path[0]) {
+        frames = 0;                      /* nothing playing: nothing to follow */
+        return;
+    }
+    q_lock(&A.q);
+    if (A.q.cur >= 0 && A.q.cur < A.q.n && !strcmp(A.q.items[A.q.cur].path, path))
+        row = A.q.cur;
+    else
+        row = -1;
+    q_unlock(&A.q);
+    if (row >= 0) { frames = 0; return; }        /* agrees with mpv */
+
+    if (strcmp(path, seen) != 0) {               /* a new candidate: start counting */
+        snprintf(seen, sizeof seen, "%s", path);
+        frames = 0;
+        first = SDL_GetTicks64();
+    }
+    if (++frames < 3 || SDL_GetTicks64() - first < 150) return;
+
+    row = queue_row_of(path, A.q.cur);
+    if (row < 0) { frames = 0; return; }         /* not one of ours: leave it */
+    q_lock(&A.q);
+    A.q.cur = row;
+    A.last_meta = A.q.items[row].meta;
+    snprintf(A.last_name, sizeof A.last_name, "%s",
+             A.last_meta.title[0] ? A.last_meta.title : A.q.items[row].name);
+    A.have_last = 1;
+    q_unlock(&A.q);
+    fprintf(stderr, "marimo: queue was a row behind; following \"%s\"\n", A.last_name);
+    A.last_time = 0;
+    load_art();
+    scrobble_now_playing(&A.last_meta);
+    frames = 0;
 }
 
 static void open_modal(void)
@@ -3457,25 +3594,25 @@ static int selftest(const char *cfgfile_global)
 
     if (getenv("MARIMO_WAVE_CHECK")) {
         const char *dir = getenv("MARIMO_WAVE_CHECK");
-        DIR *d = opendir(dir);
+        MD_DIR *d = md_opendir(dir);
         if (!d) {
             printf("waveform: %s not accessible — skipping the generator comparison\n", dir);
         } else {
-            struct dirent *de;
+            const char *nm;
             int n = 0, exact = 0, absent = 0, worst = 0;
-            while ((de = readdir(d)) != NULL) {
-                const char *dot = strrchr(de->d_name, '.');
+            while ((nm = md_readdir(d)) != NULL) {
+                const char *dot = strrchr(nm, '.');
                 char path[Q_PATH_MAX];
                 unsigned char mine[WAVE_BUCKETS], theirs[WAVE_BUCKETS];
                 int k;
-                if (de->d_name[0] == '.' || !dot) continue;
+                if (nm[0] == '.' || !dot) continue;
                 if (strcasecmp(dot, ".flac") && strcasecmp(dot, ".mp3") &&
                     strcasecmp(dot, ".m4a") && strcasecmp(dot, ".opus") &&
                     strcasecmp(dot, ".ogg") && strcasecmp(dot, ".wav")) continue;
-                if (!wave_sidecar_read(dir, de->d_name, theirs)) { absent++; continue; }
-                snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+                if (!wave_sidecar_read(dir, nm, theirs)) { absent++; continue; }
+                snprintf(path, sizeof path, "%s/%s", dir, nm);
                 if (!wave_decode(path, mine)) {          /* no cache: a real decode */
-                    printf("FAIL: waveform could not decode %s\n", de->d_name);
+                    printf("FAIL: waveform could not decode %s\n", nm);
                     fails++;
                     continue;
                 }
@@ -3487,7 +3624,7 @@ static int selftest(const char *cfgfile_global)
                 }
                 if (memcmp(mine, theirs, WAVE_BUCKETS) == 0) exact++;
             }
-            closedir(d);
+            md_closedir(d);
             printf("waveform: %d/%d decoded files match the generator exactly "
                    "(max delta %d, %d files not in the sidecar)\n", exact, n, worst, absent);
             if (n == 0) printf("waveform: nothing in %s to compare against\n", dir);
@@ -3831,9 +3968,17 @@ static int selftest(const char *cfgfile_global)
          * first case and none reach the second. */
         {
             char tdir[256], p[512], cov[1024];
+            const char *tbase = getenv("TMPDIR");
             FILE *f;
-            snprintf(tdir, sizeof tdir, "/tmp/marimo-cover-test-%d", (int)getpid());
-            if (mkdir(tdir, 0755) != 0) {
+            /* Windows has no /tmp — a path without a drive resolves against the
+             * current one, and C:\tmp is not normally creatable, so the fixture
+             * goes wherever the platform says temp is. Under wine /tmp works by
+             * accident, which is exactly why this only shows up on real windows. */
+            if (!tbase || !*tbase) tbase = getenv("TEMP");
+            if (!tbase || !*tbase) tbase = getenv("TMP");
+            if (!tbase || !*tbase) tbase = "/tmp";
+            snprintf(tdir, sizeof tdir, "%s/marimo-cover-test-%d", tbase, (int)getpid());
+            if (fs_mkdir(tdir) != 0) {
                 printf("FAIL: cover fixture dir\n");
                 ok = 0;
             } else {
@@ -3870,34 +4015,34 @@ static int selftest(const char *cfgfile_global)
      *   MARIMO_COVER_CHECK="$HOME/Music" ./build/marimo --selftest */
     if (getenv("MARIMO_COVER_CHECK")) {
         const char *root = getenv("MARIMO_COVER_CHECK");
-        DIR *d = opendir(root);
+        MD_DIR *d = md_opendir(root);
         if (!d) {
             printf("cover census: %s not accessible\n", root);
         } else {
-            struct dirent *de;
+            const char *nm;
             int albums = 0, lone = 0, none = 0, ranks[6] = { 0, 0, 0, 0, 0, 0 };
-            while ((de = readdir(d)) != NULL) {
+            while ((nm = md_readdir(d)) != NULL) {
                 char path[L_PATH_MAX], cov[1024];
                 struct stat st;
-                if (de->d_name[0] == '.') continue;
-                snprintf(path, sizeof path, "%s/%s", root, de->d_name);
-                if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                if (nm[0] == '.') continue;
+                snprintf(path, sizeof path, "%s/%s", root, nm);
+                if (fs_stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
                 albums++;
                 if (lib_find_cover(path, cov, sizeof cov) != 0) { none++; continue; }
                 {
                     const char *base = strrchr(cov, '/');
                     int r;
                     base = base ? base + 1 : cov;
-                    r = cover_rank(base, de->d_name);
+                    r = cover_rank(base, nm);
                     if (r >= 0 && r < 6) {
                         ranks[r]++;
                     } else {
                         lone++;
-                        printf("cover census: lone  %-38.38s -> %s\n", de->d_name, base);
+                        printf("cover census: lone  %-38.38s -> %s\n", nm, base);
                     }
                 }
             }
-            closedir(d);
+            md_closedir(d);
             printf("cover census: %d albums — cover %d, folder %d, front %d, album %d, "
                    "cover* %d, artist-album %d, lone %d, none %d\n",
                    albums, ranks[0], ranks[1], ranks[2], ranks[3], ranks[4], ranks[5],
@@ -3992,6 +4137,12 @@ static int selftest(const char *cfgfile_global)
         if (q_find(&q, "/tmp/t3.flac") != 2) { printf("FAIL: find\n"); fails++; }
         q.shuffle = 1;
         if (q_next(&q) < 0 || q_next(&q) >= 4) { printf("FAIL: shuffle range\n"); fails++; }
+        q.shuffle = 0;
+        /* q_next_from: the same rule from a given row. This is what the error path
+         * uses to step *over* the row mpv could not play (and, with an EOF in the
+         * same frame, over the row after the one that just ended). */
+        if (q_next_from(&q, 1) != 2) { printf("FAIL: next_from\n"); fails++; }
+        if (q_next_from(&q, 3) != -1) { printf("FAIL: next_from at the end\n"); fails++; }
         q_free(&q);
         printf("queue: %s\n", fails ? "FAIL" : "ok");
     }
@@ -4514,7 +4665,7 @@ int main(int argc, char **argv)
             return rc;
         }
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot_path = argv[++i];
-        else { fprintf(stderr, "usage: %s [--selftest|--headless=DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
+        else { fprintf(stderr, "usage: %s [--selftest|--headless DIR|--smoke] [--music DIR] [--aout NAME]\n", argv[0]); return 1; }
     }
 
     snprintf(cfgfile, sizeof cfgfile, "%s/.config/marimo/config.ini", home);
@@ -4681,6 +4832,18 @@ int main(int argc, char **argv)
             }
         }
     }
+    /* and a queue row that could not be played, which otherwise needs a broken
+     * file on a networked library to happen for real:
+     *   MARIMO_QUEUE_FAIL=1 MARIMO_TAB=1 ./build/marimo --screenshot q.png */
+    {
+        const char *qf = getenv("MARIMO_QUEUE_FAIL");
+        if (qf) {
+            int row = atoi(qf);
+            q_lock(&A.q);
+            if (row >= 0 && row < A.q.n) A.q.items[row].failed = 1;
+            q_unlock(&A.q);
+        }
+    }
     if (shot_path) return screenshot(shot_path);
 
     while (A.running) {
@@ -4693,6 +4856,7 @@ int main(int argc, char **argv)
             if (pe) on_end(pe);
         }
         threshold_check();
+        playback_follow();
         /* mpris: publish state, then drain commands from the dbus thread */
         {
             MprisState ms;

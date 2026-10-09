@@ -13,8 +13,24 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "fs.h"                  /* fs_mkdir here, and the wide path on windows */
+#ifndef _WIN32
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <wchar.h>
+#endif
+
+/* sub-second mtime: POSIX has st_mtim.tv_nsec, mingw only has whole seconds. The
+ * cache key therefore changes less often on windows — worst case a rewritten file
+ * of the same size within the same second reuses a stale waveform, which the
+ * sidecars make moot for the library that ships with them. */
+#ifdef _WIN32
+#define MTIME_NS(st) ((unsigned long long)(st).st_mtime * 1000000000ull)
+#else
+#define MTIME_NS(st) ((unsigned long long)(st).st_mtim.tv_nsec \
+                      + (unsigned long long)(st).st_mtime * 1000000000ull)
+#endif
 
 #define WAVE_RATE   8000        /* must match make-waveforms.py RATE */
 #define WAVE_STRIDE 4           /* ...and STRIDE */
@@ -89,6 +105,8 @@ int wave_sidecar_read(const char *album_dir, const char *track_name,
 }
 
 /* ---------------- decode ---------------- */
+
+#ifndef _WIN32
 
 /* read() the child's stdout into one buffer. */
 static unsigned char *slurp_fd(int fd, size_t *out_len)
@@ -170,6 +188,66 @@ static int ffmpeg_pcm(const char *path, unsigned char **buf, size_t *len)
     return 0;
 }
 
+#else /* _WIN32 */
+
+/* No fork here, so the child's stdout comes back through a pipe FILE*. It is the
+ * WIDE popen on purpose: _popen would push the command line through the ANSI
+ * codepage and mangle every Japanese album name, which is the whole reason fs.c
+ * exists. The path is still quoted, because the line does go through cmd.exe.
+ * ffmpeg's stderr is not redirected — under -mwindows there is no console for it
+ * to land on, and a missing ffmpeg is already reported by the exit status. */
+static unsigned char *slurp_stream(FILE *p, size_t *out_len)
+{
+    size_t cap = 1u << 20, len = 0;
+    unsigned char *buf = malloc(cap);
+    if (!buf) return NULL;
+    for (;;) {
+        size_t r;
+        if (len == cap) {
+            unsigned char *nb;
+            if (cap >= WAVE_SRC_MAX) { free(buf); return NULL; }
+            cap *= 2;
+            nb = realloc(buf, cap);
+            if (!nb) { free(buf); return NULL; }
+            buf = nb;
+        }
+        r = fread(buf + len, 1, cap - len, p);
+        if (r == 0) break;              /* EOF or error; _pclose says which */
+        len += r;
+    }
+    *out_len = len;
+    return buf;
+}
+
+static int ffmpeg_pcm(const char *path, unsigned char **buf, size_t *len)
+{
+    wchar_t *wp = fs_utf8_to_wide(path ? path : "");
+    wchar_t cmd[4096];
+    FILE *p;
+
+    *buf = NULL;
+    *len = 0;
+    if (!wp) return -1;
+    _snwprintf(cmd, (sizeof cmd / sizeof cmd[0]) - 1,
+               L"ffmpeg -v error -nostdin -i \"%ls\" -map 0:a:0 -ac 1 -ar 8000"
+               L" -f s16le -", wp);
+    cmd[(sizeof cmd / sizeof cmd[0]) - 1] = 0;
+    free(wp);
+
+    p = _wpopen(cmd, L"rb");
+    if (!p) return -1;
+    *buf = slurp_stream(p, len);
+    if (_pclose(p) != 0 || !*buf || *len < 2) {
+        free(*buf);
+        *buf = NULL;
+        *len = 0;
+        return -1;
+    }
+    return 0;
+}
+
+#endif /* _WIN32 */
+
 static int cmp_double(const void *a, const void *b)
 {
     double x = *(const double *)a, y = *(const double *)b;
@@ -238,7 +316,7 @@ static int cache_path_for(const char *path, char *out, size_t n)
     const char *base = getenv("XDG_CACHE_HOME");
     char key[1024];
     struct stat st;
-    if (stat(path, &st) != 0) return 0;
+    if (fs_stat(path, &st) != 0) return 0;
     if (!base || !*base) {
         const char *home = getenv("HOME");
         if (!home || !*home) return 0;
@@ -251,8 +329,7 @@ static int cache_path_for(const char *path, char *out, size_t n)
     if ((size_t)snprintf(out, n, "%s/%016llx-%016llx-%016llx.w", key,
                          (unsigned long long)fnv1a(path),
                          (unsigned long long)st.st_size,
-                         (unsigned long long)st.st_mtim.tv_nsec
-                             + (unsigned long long)st.st_mtime * 1000000000ull) >= n)
+                         (unsigned long long)MTIME_NS(st)) >= n)
         return 0;
     return 1;
 }
@@ -266,7 +343,7 @@ static void cache_dir_make(const char *file)
         for (s = dir + 1; *s; s++) {
             if (*s != '/') continue;
             *s = 0;
-            mkdir(dir, 0755);          /* EEXIST is fine and expected */
+            fs_mkdir(dir);             /* EEXIST is fine and expected */
             *s = '/';
         }
     }

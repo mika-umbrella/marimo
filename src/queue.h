@@ -25,6 +25,7 @@ typedef struct {
     int scrobbled;   /* scrobble already submitted for this listen */
     int np_sent;     /* now-playing already sent */
     int diary_logged;/* listening diary already has this listen */
+    int failed;      /* mpv could not play it (see on_end); cleared when it does */
 } QItem;
 
 typedef struct {
@@ -52,6 +53,8 @@ void q_move(Queue *q, int from, int to);
 /* index to play after current (respects shuffle/repeat); -1 = stop.
  * does NOT move q->cur. */
 int  q_next(Queue *q);
+/* the same rule starting from row `cur` rather than the queue's own current row */
+int  q_next_from(Queue *q, int cur);
 /* "previous": random when shuffling, else cur-1 (wraps if repeat all) */
 int  q_prev(Queue *q);
 
