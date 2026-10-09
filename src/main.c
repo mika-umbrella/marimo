@@ -737,17 +737,41 @@ static void draw_header(void)
 static void draw_art(void)
 {
     SDL_Rect r = A.L.art;
+    SDL_Rect dst = r;
+    if (A.art) {
+        /* Fit at the art's own ratio, centred in the box, the way the phone's player
+         * does (fitCenter) — a non-square cover used to be squashed into ART_SZ^2.
+         * A 1187x772 cover letterboxes top and bottom instead of stretching. */
+        int tw = 0, th = 0;
+        if (SDL_QueryTexture(A.art, NULL, NULL, &tw, &th) == 0 && tw > 0 && th > 0) {
+            double ar = (double)tw / (double)th;
+            double box = (double)r.w / (double)r.h;
+            if (ar > box) {
+                dst.w = r.w;
+                dst.h = (int)(r.w / ar + 0.5);
+            } else {
+                dst.h = r.h;
+                dst.w = (int)(r.h * ar + 0.5);
+            }
+            dst.x = r.x + (r.w - dst.w) / 2;
+            dst.y = r.y + (r.h - dst.h) / 2;
+        }
+    }
+    /* The backing and the border both wrap the *drawn* rect, not the whole ART_SZ
+     * box: a portrait or landscape cover gets a panel the shape of the cover, with
+     * no black square around it. With no art, dst stays the full box and the note
+     * sits in it as before. */
     SDL_SetRenderDrawColor(A.ren, 0, 0, 0, 255);
-    SDL_RenderFillRect(A.ren, &r);
+    SDL_RenderFillRect(A.ren, &dst);
     if (A.art) {
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");   /* smooth art */
-        SDL_RenderCopy(A.ren, A.art, NULL, &r);
+        SDL_RenderCopy(A.ren, A.art, NULL, &dst);
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     } else {
-        draw_text(r.x + 8, r.y + 8, "\xe2\x99\xaa", C_DIM, 5);  /* ♪ */
+        draw_text(dst.x + 8, dst.y + 8, "\xe2\x99\xaa", C_DIM, 5);  /* ♪ */
     }
     SDL_SetRenderDrawColor(A.ren, C_BD.r, C_BD.g, C_BD.b, 255);
-    SDL_RenderDrawRect(A.ren, &r);
+    SDL_RenderDrawRect(A.ren, &dst);
 }
 
 static void draw_playerbar(void)
